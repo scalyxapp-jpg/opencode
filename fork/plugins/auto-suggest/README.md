@@ -77,6 +77,32 @@ Session wirklich etwas passiert ist (Datei geändert, Befehl ausgeführt oder
 Fehlschlag), und höchstens einmal pro Turn. Sonst käme der Vorschlag aus dem
 Nichts.
 
+### Genau eine Runde pro Anfrage — auch bei Hot-Reload und mehreren Fenstern
+
+Das Ereignis allein genügt dafür nicht. Zwei Dinge sorgen sonst dafür, dass
+mehrere Formulare mit jeweils **eigenen** Vorschlägen erscheinen:
+
+- **Der Ereigniskanal räumt nicht selbst auf.** `data.on` hängt am globalen
+  Emitter des Hosts (`createGlobalEmitter`) und liefert einen Abmelder. Wird der
+  nicht zurückgegeben, bleibt nach **jedem Hot-Reload** der alte Zuhörer aktiv —
+  und jede weitere Fassung erzeugt dann ihre eigene Runde. `setup()` gibt
+  deshalb einen Aufräumer zurück, der die Zuhörer abmeldet; der Host ruft ihn
+  beim Ablösen auf.
+- **Ein `pending`-Flag gilt nur innerhalb einer Instanz.** Mehrere Fenster hören
+  dasselbe Ereignis. Deshalb wird die Runde in der **Plugin-Ablage** beansprucht
+  (`storage.store("offered")`): das Schreiben läuft unter Dateisperre, die
+  Prüfung passiert darin, und nur wer sie gewinnt, generiert und legt an. Der
+  Schlüssel ist die letzte **Anfrage des Nutzers**, nicht die letzte
+  Assistenten-Nachricht — eine Anfrage kann mehrere Schritte haben, ergibt aber
+  genau eine Runde.
+
+Zusammen mit `answeredTurn` und `keepSoleForm` heißt das: **eine Generierung,
+ein Formular, eine Absendung pro Anfrage.**
+
+> Nach einer Plugin-Änderung sollte opencode einmal neu gestartet werden.
+> Fassungen ohne Aufräumer haben ihre Zuhörer nie abgemeldet; die alten bleiben
+> bis zum Prozessende aktiv, weil ihre Runden nicht an der Ablage hängen.
+
 ### Es gibt genau ein Formular — nicht mehrere
 
 Ein unbeantwortetes Formular bleibt serverseitig offen, und die Oberfläche zeigt

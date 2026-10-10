@@ -499,7 +499,7 @@ export default {
   id: "auto-suggest",
 
   async setup(context) {
-    const { client, data, ui, keymap } = context
+    const { client, data, ui, keymap, storage } = context
     let pending = false
     let answeredTurn = ""
 
@@ -690,6 +690,53 @@ export default {
     const lastAssistant = (sessionID) =>
       [...(data.session.message.list(sessionID) ?? [])].reverse().find((message) => message.type === "assistant")
 
+    // Genau eine Vorschlagsrunde pro Anfrage — auch bei mehreren Fenstern oder
+    // nach einem Hot-Reload.
+    //
+    // Ein Ereignis allein reicht dafuer nicht: mehrere Plugin-Instanzen hoeren
+    // dasselbe `session.execution.succeeded` (jedes Fenster, und nach einem
+    // Hot-Reload auch die abgeloeste Fassung), und ein `pending`-Flag gilt nur
+    // innerhalb einer Instanz. Deshalb wird die Runde in der Plugin-Ablage
+    // beansprucht: das Schreiben laeuft unter Dateisperre, die Pruefung passiert
+    // darin, und nur wer sie gewinnt, legt ein Formular an.
+    //
+    // Schluessel ist die letzte Anfrage des Nutzers, nicht die letzte
+    // Assistenten-Nachricht: eine Anfrage kann mehrere Schritte und damit
+    // mehrere Assistenten-Nachrichten haben, ergibt aber genau eine Runde.
+    const CLAIM_KEY = "offered"
+    const claimedTurns = new Set()
+
+    let updateClaims
+    try {
+      const [, update] = storage.store(CLAIM_KEY, { initial: { turns: {} } })
+      updateClaims = update
+    } catch {
+      /* ohne Ablage bleibt die Sperre im Prozess */
+    }
+
+    const claimTurn = async (sessionID, turnID) => {
+      const local = `${sessionID}:${turnID}`
+      if (claimedTurns.has(local)) return false
+      if (!updateClaims) {
+        claimedTurns.add(local)
+        return true
+      }
+      let claimed = false
+      try {
+        await updateClaims((draft) => {
+          draft.turns ??= {}
+          if (draft.turns[sessionID] === turnID) return
+          draft.turns[sessionID] = turnID
+          claimed = true
+        })
+      } catch {
+        /* Ablage nicht schreibbar: es bleibt die Sperre im Prozess */
+      }
+      if (!claimed) return false
+      claimedTurns.add(local)
+      return true
+    }
+
     /** Oeffnet die Auswahl einmal pro Turn, sobald der Agent fertig geschrieben hat. */
     const openAfterTurn = async (event) => {
       const sessionID = event?.data?.sessionID ?? currentSession()
@@ -712,6 +759,14 @@ export default {
       if (!didWork) return
 
       answeredTurn = last.id
+
+      // Die Runde beanspruchen, bevor etwas generiert wird: sonst legt jede
+      // Instanz ihre eigene Runde mit eigenen Vorschlaegen an.
+      const requested = [...(data.session.message.list(sessionID) ?? [])]
+        .reverse()
+        .find((message) => message.type === "user")
+      if (!(await claimTurn(sessionID, requested?.id ?? last.id))) return
+
       await ask(sessionID)
     }
 
@@ -722,12 +777,32 @@ export default {
     }
 
     // `session.idle` bleibt als Rueckfall eingetragen, falls eine Fassung ihn
-    // doch noch schickt. Doppelte Aufrufe faengt `answeredTurn` ab.
+    // doch noch schickt. Doppelte Aufrufe faengt die Runden-Sperre ab.
+    //
+    // Zuhoerer sammeln und beim Abmelden mitnehmen.
+    //
+    // `data` gehoert dem Host, nicht dieser Aktivierung: `data.on` haengt am
+    // gemeinsamen Ereignisstrom und liefert den Abmelder. Wird er nicht
+    // zurueckgegeben, bleibt nach jedem Hot-Reload ein alter Zuhoerer aktiv —
+    // und dann erzeugt jede weitere Fassung ihre eigene Vorschlagsrunde, also
+    // mehrere Formulare mit jeweils eigenen Vorschlaegen pro Turn.
+    const unsubscribers = []
     for (const type of ["session.execution.succeeded", "session.idle"]) {
       try {
-        data.on(type, onTurnSettled)
+        const unsubscribe = data.on(type, onTurnSettled)
+        if (typeof unsubscribe === "function") unsubscribers.push(unsubscribe)
       } catch {
         /* Ereignis nicht verfuegbar */
+      }
+    }
+
+    return () => {
+      for (const unsubscribe of unsubscribers) {
+        try {
+          unsubscribe()
+        } catch {
+          /* bereits abgemeldet */
+        }
       }
     }
   },
