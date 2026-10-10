@@ -500,6 +500,54 @@ function taskContext(evidence) {
 }
 
 /**
+ * Vorschlaege ohne Modell.
+ *
+ * In langen Sessions kann die Anfrage scheitern (etwa ein 502 vom Anbieter).
+ * Ein aus den Belegen abgeleiteter Schritt ist dann immer noch besser als gar
+ * keiner: jeder Eintrag nennt genau die Luecke, die er schliesst, und
+ * composeTask macht daraus denselben vollstaendigen Auftrag wie sonst.
+ */
+function fallbackSuggestions(evidence) {
+  const files = evidence.edited.length ? evidence.edited : evidence.readOnly
+  const list = []
+  const add = (kind, title, detail) => {
+    if (list.length >= suggestionBudget(evidence)) return
+    list.push({ title, detail: withKind(kind, detail), prompt: "" })
+  }
+
+  if (evidence.failures.length)
+    add(
+      "Absichern",
+      "Offene Fehlschläge beheben",
+      `Ausstehen ${evidence.failures.length} fehlgeschlagene Aufrufe: ${evidence.failures
+        .map((failure) => `${failure.tool} ${failure.target || "?"}`)
+        .join(", ")}.`,
+    )
+  if (evidence.code.length && !evidence.tests.length)
+    add(
+      "Absichern",
+      "Tests für die geänderten Dateien nachziehen",
+      `Geändert wurden ${evidence.code.join(", ")}, ohne dass eine Testdatei angefasst wurde.`,
+    )
+  if (evidence.edited.length && !evidence.commands.length)
+    add(
+      "Absichern",
+      "Änderung verifizieren",
+      `Die Änderung an ${evidence.edited.join(", ")} wurde mit keinem Befehl geprüft.`,
+    )
+  if (evidence.edited.length && !evidence.docs.length)
+    add("Vertiefen", "Änderung dokumentieren", `Zu ${evidence.edited.join(", ")} wurde keine Dokumentation angepasst.`)
+  if (evidence.manifests.length)
+    add("Vertiefen", "Abhängigkeiten und Build prüfen", `Beteiligt waren ${evidence.manifests.join(", ")}.`)
+  if (!evidence.edited.length && evidence.readOnly.length)
+    add("Fortsetzen", "Vom Lesen zur Änderung kommen", `Bisher wurde nur gelesen: ${evidence.readOnly.join(", ")}.`)
+  if (!list.length && files.length)
+    add("Fortsetzen", "Am letzten Stand weitermachen", `Zuletzt im Spiel: ${files.join(", ")}.`)
+
+  return list
+}
+
+/**
  * Wartet auf die Antwort des Formulars.
  *
  * Die Plugin-API meldet kein Ereignis fuer Antworten, deshalb wird der Zustand
@@ -671,12 +719,22 @@ export default {
         // Rueckmeldung wirkt das wie ein Haenger.
         toast("Frage das Modell nach Vorschlägen …", "info")
 
-        const generated = await client.session.generate({ sessionID, prompt: buildPrompt(evidence, focus) })
+        // In langen Sessions scheitert die Anfrage mitunter (etwa ein 502 des
+        // Anbieters). Dann darf der Befehl nicht ins Leere laufen: es gibt
+        // Vorschlaege aus den Belegen.
+        let generated
+        try {
+          generated = await client.session.generate({ sessionID, prompt: buildPrompt(evidence, focus) })
+        } catch (cause) {
+          toast(`Modell nicht erreichbar (${cause?.message ?? cause}) — Vorschläge aus den Belegen`, "warning")
+        }
 
         // Zweite, belegbasierte Bremse: das Modell darf sich an der Obergrenze
         // nicht vorbeireden. Bei mehr Vorschlägen als die Session trägt, fliegt
         // der Rest hier raus.
-        const suggestions = parseSuggestions(generated?.text ?? generated).slice(0, suggestionBudget(evidence))
+        const suggestions = generated
+          ? parseSuggestions(generated?.text ?? generated).slice(0, suggestionBudget(evidence))
+          : fallbackSuggestions(evidence)
 
         if (!suggestions.length) {
           toast("Die Belege geben keinen nächsten Schritt her", "info")
