@@ -103,6 +103,12 @@ ein Formular, eine Absendung pro Anfrage.**
 > Fassungen ohne Aufräumer haben ihre Zuhörer nie abgemeldet; die alten bleiben
 > bis zum Prozessende aktiv, weil ihre Runden nicht an der Ablage hängen.
 
+Zur Nachvollziehbarkeit schreibt das Plugin seine Runden-Entscheidungen nach
+`<state>/<channel>/tui/plugin.auto-suggest.diagnostics.json` (die letzten 60
+Einträge): wer wann eine Runde beansprucht hat, wer sie verloren hat und welches
+Formular entstanden ist. Das Serverlog taugt dafür **nicht** — es protokolliert
+nur Fehlantworten, erfolgreiche Aufrufe stehen nicht darin.
+
 ### Es gibt genau ein Formular — nicht mehrere
 
 Ein unbeantwortetes Formular bleibt serverseitig offen, und die Oberfläche zeigt

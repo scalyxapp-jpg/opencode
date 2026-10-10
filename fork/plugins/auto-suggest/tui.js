@@ -608,6 +608,8 @@ export default {
           return false
         }
 
+        note({ action: "opened", sessionID, form: formID, count: suggestions.length })
+
         // Hat ein zweites Fenster gleichzeitig angelegt, bleibt genau eines
         // stehen — und zwar dasselbe in beiden Fenstern (das aelteste).
         const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true }
@@ -714,11 +716,37 @@ export default {
       /* ohne Ablage bleibt die Sperre im Prozess */
     }
 
+    // Spurensicherung: jede Runden-Entscheidung wird mitgeschrieben (begrenzt).
+    //
+    // Das Serverlog taugt dafuer nicht: es protokolliert nur Fehlantworten, ein
+    // erfolgreicher Aufruf steht nicht darin. Ohne diese Spur laesst sich ein
+    // erneutes Mehrfach-Auftreten nur erraten.
+    let writeDiagnostics
+    try {
+      const [, update] = storage.store("diagnostics", { initial: { log: [] } })
+      writeDiagnostics = (entry) =>
+        update((draft) => {
+          draft.log = [...(draft.log ?? []), entry].slice(-60)
+        })
+    } catch {
+      /* ohne Ablage keine Spur */
+    }
+
+    const note = (entry) => {
+      if (!writeDiagnostics) return
+      try {
+        void writeDiagnostics({ at: Date.now(), instance: INSTANCE_ID, ...entry }).catch(() => undefined)
+      } catch {
+        /* Spur ist freiwillig */
+      }
+    }
+
     const claimTurn = async (sessionID, turnID) => {
       const local = `${sessionID}:${turnID}`
       if (claimedTurns.has(local)) return false
       if (!updateClaims) {
         claimedTurns.add(local)
+        note({ action: "claim", sessionID, turn: turnID, won: true, storage: false })
         return true
       }
       let claimed = false
@@ -732,6 +760,7 @@ export default {
       } catch {
         /* Ablage nicht schreibbar: es bleibt die Sperre im Prozess */
       }
+      note({ action: "claim", sessionID, turn: turnID, won: claimed })
       if (!claimed) return false
       claimedTurns.add(local)
       return true
@@ -745,7 +774,10 @@ export default {
       // Immer aufraeumen, auch wenn diese Instanz die Runde nicht bekommt.
       collectLooseForms(sessionID)
 
-      if (pending) return
+      if (pending) {
+        note({ action: "skip", sessionID, reason: "Auswahl ist noch offen" })
+        return
+      }
 
       // Das Ereignis wird beim Commit veroeffentlicht, die Nachrichtenliste des
       // Clients kann einen Wimpernschlag hinterherhinken. Ein verpasster Turn
@@ -759,9 +791,15 @@ export default {
       if (!last || last.id === answeredTurn) return
 
       const { evidence } = readEvidence(sessionID)
-      if (evidence.turns < MIN_TURNS) return
+      if (evidence.turns < MIN_TURNS) {
+        note({ action: "skip", sessionID, reason: "zu wenig Turns" })
+        return
+      }
       const didWork = evidence.edited.length + evidence.commands.length + evidence.failures.length > 0
-      if (!didWork) return
+      if (!didWork) {
+        note({ action: "skip", sessionID, reason: "nichts passiert" })
+        return
+      }
 
       answeredTurn = last.id
 
@@ -770,7 +808,10 @@ export default {
       const requested = [...(data.session.message.list(sessionID) ?? [])]
         .reverse()
         .find((message) => message.type === "user")
-      if (!(await claimTurn(sessionID, requested?.id ?? last.id))) return
+      if (!(await claimTurn(sessionID, requested?.id ?? last.id))) {
+        note({ action: "skip", sessionID, reason: "Runde ist schon vergeben" })
+        return
+      }
 
       await ask(sessionID)
     }
