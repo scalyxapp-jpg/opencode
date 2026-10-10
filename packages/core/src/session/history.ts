@@ -79,20 +79,44 @@ const messageEntries = Effect.fnUntraced(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
   boundary: Boundary,
+  /**
+   * Nur die letzten N Zeilen laden. Für Leser, die den Verlauf nur als Kontext
+   * brauchen (Vorschläge, Nebenantworten), nicht als vollständige Historie.
+   * Ohne Angabe bleibt das Verhalten unverändert — der Runner sieht weiterhin
+   * alles.
+   */
+  tail?: number,
 ) {
   const compaction = yield* latestCompaction(db, sessionID, boundary)
-  const rows = yield* db
-    .select()
-    .from(SessionMessageTable)
-    .where(
-      and(
-        eq(SessionMessageTable.session_id, sessionID),
-        compaction ? gte(SessionMessageTable.seq, compaction.seq) : undefined,
-      ),
-    )
-    .orderBy(asc(SessionMessageTable.seq))
-    .all()
-    .pipe(Effect.orDie)
+  const rows = yield* (
+    tail === undefined
+      ? db
+          .select()
+          .from(SessionMessageTable)
+          .where(
+            and(
+              eq(SessionMessageTable.session_id, sessionID),
+              compaction ? gte(SessionMessageTable.seq, compaction.seq) : undefined,
+            ),
+          )
+          .orderBy(asc(SessionMessageTable.seq))
+          .all()
+      : db
+          .select()
+          .from(SessionMessageTable)
+          .where(
+            and(
+              eq(SessionMessageTable.session_id, sessionID),
+              compaction ? gte(SessionMessageTable.seq, compaction.seq) : undefined,
+            ),
+          )
+          // Von hinten lesen und erst danach wenden: mit LIMIT in aufsteigender
+          // Reihenfolge käme der Session-Anfang statt des aktuellen Stands.
+          .orderBy(desc(SessionMessageTable.seq))
+          .limit(tail)
+          .all()
+          .pipe(Effect.map((loaded) => loaded.toReversed()))
+  ).pipe(Effect.orDie)
   const entries = yield* Effect.forEach(rows, (row) =>
     decodeMessageRow(row).pipe(Effect.map((message) => ({ seq: row.seq, message }))),
   )
@@ -139,12 +163,13 @@ export const preview = Effect.fn("SessionHistory.preview")(function* (
   sessionID: SessionSchema.ID,
   instructions: Instructions.List,
   boundary: Boundary,
+  tail?: number,
 ) {
   const observed = yield* Instructions.read(instructions)
   return yield* db
     .transaction(() =>
       Effect.gen(function* () {
-        const messages = yield* messageEntries(db, sessionID, boundary)
+        const messages = yield* messageEntries(db, sessionID, boundary, tail)
         // An active assistant may contain an unresolved tool call, so only preview the settled prefix.
         const unsettled = messages.findIndex(
           (entry) => entry.message.type === "assistant" && entry.message.time.completed === undefined,

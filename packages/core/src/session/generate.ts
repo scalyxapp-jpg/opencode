@@ -22,6 +22,16 @@ export type Error =
   | AIError
   | FileSystem.DirectoryNotFoundError
 
+/**
+ * Wie viel Verlauf ein Generierungslauf höchstens mitbekommt.
+ *
+ * `generate` braucht den Verlauf nur als Kontext für eine einzelne Antwort, nicht
+ * als vollständige Historie. Ohne Grenze wird die gesamte Session geladen: eine
+ * Session mit 1352 Turns über 717 MB JSON würde bei jedem Aufruf vollständig
+ * eingelesen und als Anfrage gebaut — das passt in kein Kontextfenster.
+ */
+const GENERATE_TAIL = 30
+
 /** Generates text from current Session context without mutating the Session. */
 export const generate = Effect.fn("SessionGenerate.generate")(function* (input: {
   session: SessionSchema.Info
@@ -41,6 +51,7 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       selection.session.id,
       selection.instructions,
       SessionProviderContext.provenance(model) ?? "local",
+      GENERATE_TAIL,
     )
     const transcript = SessionModelRequest.baseTranscript({
       agent: selection.agent.info,
