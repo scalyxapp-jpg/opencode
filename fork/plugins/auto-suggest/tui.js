@@ -11,6 +11,10 @@
  * gelesenen Dateien, der erkannte Arbeitsmodus und die sichtbaren Lücken (etwa:
  * Code geändert, aber kein Test angefasst). Gibt es nichts Belastbares, wird
  * nicht gefragt — ein Vorschlag ohne Grundlage wäre geraten.
+ *
+ * Die Anzahl der Vorschläge steht nicht fest: sie folgt der Zahl unabhängiger
+ * Anker in den Belegen (s. suggestionBudget), zwischen MIN_SUGGESTIONS und
+ * MAX_SUGGESTIONS. Weniger zu liefern ist ausdrücklich erlaubt; auffüllen nicht.
  */
 
 const EVIDENCE_WINDOW = 40
@@ -18,6 +22,11 @@ const MAX_FILES = 14
 const MAX_COMMANDS = 8
 const MAX_ASKS = 4
 const MIN_TURNS = 2
+
+// Die Anzahl ist nicht fest. Sie folgt der Belegdichte (s. suggestionBudget),
+// aber nie ueber MAX_SUGGESTIONS hinaus und nie unter MIN_SUGGESTIONS.
+const MIN_SUGGESTIONS = 3
+const MAX_SUGGESTIONS = 10
 
 const FILE_TOOLS = new Set(["read", "edit", "write", "patch", "glob", "grep"])
 const WRITE_TOOLS = new Set(["edit", "write", "patch"])
@@ -192,6 +201,9 @@ function collectEvidence(messages) {
 
 /** Auftrag samt Belegblock. Die Anweisung steht vorne und wird hinten wiederholt. */
 function buildPrompt(evidence, focus) {
+  const budget = suggestionBudget(evidence)
+  const band = budget === MIN_SUGGESTIONS ? `${MIN_SUGGESTIONS}` : `${MIN_SUGGESTIONS} bis ${budget}`
+
   const lines = [`Erkannter Arbeitsmodus: ${evidence.mode}`]
   lines.push(`Turns in dieser Session: ${evidence.totalTurns}, davon betrachtet: ${evidence.turns}`)
   if (evidence.root) lines.push(`Arbeitsverzeichnis: ${evidence.root}`)
@@ -220,7 +232,8 @@ function buildPrompt(evidence, focus) {
   if (lines.length === 2) lines.push("Kaum verwertbare Arbeitsschritte im Verlauf.")
 
   return [
-    "AUFGABE: Schlage vier bis fünf nächste Arbeiten vor, die aus dieser Session folgen.",
+    `AUFGABE: Schlage ${band} nächste Arbeiten vor, die aus dieser Session folgen.`,
+    `Mehr als ${budget} werden es nie. Trägt die Session weniger, nimm weniger — auffüllen ist verboten.`,
     "Der Schwerpunkt liegt auf dem Ausbau: neue Fähigkeiten, neue Anwendungsfälle und Ideen,",
     "die auf dem entstandenen Stand aufbauen. Absicherung ist die Ausnahme, nicht die Regel.",
     "",
@@ -234,10 +247,11 @@ function buildPrompt(evidence, focus) {
     "1. Jeder Vorschlag muss sich auf einen Punkt der Belege stützen können.",
     "2. Erfinde keine Dateien, Funktionen, Tests oder Probleme. Nennt ein Vorschlag eine Datei, muss sie in den Belegen stehen.",
     "3. Beschreibe das Ziel, nicht die Handgriffe.",
-    '4. Mindestens zwei Vorschläge sind "Erweitern". Sie dürfen über den bisherigen Faden hinausdenken, solange sie an die Belege anknüpfen.',
-    '5. Höchstens einer ist "Fortsetzen", höchstens einer ist "Absichern". Alles Übrige ist "Vertiefen".',
-    "6. Wenn die Belege keinen sinnvollen Schritt hergeben, gib ein leeres Array zurück.",
-    focus ? `7. Besonderes Augenmerk: ${focus}` : "",
+    "4. Zwei Vorschläge dürfen sich nicht überschneiden. Jeder deckt einen eigenen Punkt ab — Wiederholungen mit anderem Wortlaut zählen nicht als zweiter Vorschlag.",
+    '5. Mindestens zwei sind "Erweitern"; ab sieben Vorschlägen mindestens ein Drittel. Sie dürfen über den bisherigen Faden hinausdenken, solange sie an die Belege anknüpfen.',
+    '6. Höchstens einer ist "Fortsetzen" und höchstens einer ist "Absichern"; ab acht Vorschlägen höchstens zwei. Alles Übrige ist "Vertiefen".',
+    "7. Wenn die Belege keinen sinnvollen Schritt hergeben, gib ein leeres Array zurück.",
+    focus ? `8. Besonderes Augenmerk: ${focus}` : "",
     "",
     "BELEGE (nur diese, keine Annahmen darüber hinaus):",
     lines.join("\n"),
@@ -291,7 +305,53 @@ const kindOf = (value) => {
 }
 
 /** Detail trägt die Richtung vorne, damit die Liste auf einen Blick streut. */
-const withKind = (kind, detail) => clip(kind ? `${kind} · ${detail}` : detail, 240)
+const withKind = (kind, detail) => {
+  if (!kind) return clip(detail, 240)
+  if (!detail) return clip(kind, 240)
+  return clip(`${kind} · ${detail}`, 240)
+}
+
+/**
+ * Wie viele Vorschläge diese Session überhaupt trägt.
+ *
+ * Die Menge folgt der Zahl unabhängiger Anker in den Belegen, nicht der Laune
+ * des Modells: eine kurze Session mit zwei Dateien trägt keine zehn
+ * Vorschläge, eine mit vielen Spuren (Dateien, Befehle, Anfragen, Lücken)
+ * trägt mehr als fünf. Das Ergebnis ist eine Obergrenze, kein Soll — liefert
+ * das Modell weniger, bleibt es dabei.
+ *
+ * Die Stufen sind bewusst grob: feiner wäre eine Genauigkeit, die die Belege
+ * nicht hergeben.
+ */
+function suggestionBudget(evidence) {
+  const anchors =
+    evidence.edited.length +
+    evidence.readOnly.length +
+    evidence.commands.length +
+    evidence.asks.length +
+    evidence.signals.length
+
+  if (anchors <= 5) return MIN_SUGGESTIONS
+  if (anchors <= 10) return 5
+  if (anchors <= 16) return 7
+  return 9
+}
+
+/** Doppelte Titel fliegen raus, und nie mehr als das harte Maximum. */
+function normalizeSuggestions(items) {
+  const seen = new Set()
+  const unique = []
+  for (const item of items) {
+    const title = String(item?.title ?? "").trim()
+    if (!title) continue
+    const key = title.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push({ ...item, title })
+    if (unique.length === MAX_SUGGESTIONS) break
+  }
+  return unique
+}
 
 /** Drei Stufen, weil Modelle sich nicht zuverlässig an ein Format halten. */
 function parseSuggestions(raw) {
@@ -315,7 +375,7 @@ function parseSuggestions(raw) {
             return { title: clip(title, 120), detail: withKind(kind, detail) }
           })
           .filter(Boolean)
-        if (items.length) return items.slice(0, 6)
+        if (items.length) return normalizeSuggestions(items)
       }
     } catch {
       /* nächste Stufe */
@@ -327,15 +387,22 @@ function parseSuggestions(raw) {
     .map((line) => /^\s*(?:[-*]|\d+[.)])\s+(.*)$/.exec(line)?.[1]?.trim() ?? "")
     .filter(Boolean)
   if (listed.length >= 2) {
-    return listed.slice(0, 6).map((line) => {
+    const items = listed.map((line) => {
       const split = /^(.*?)\s*[—–:]\s+(.*)$/.exec(line)
-      return split
-        ? { title: clip(split[1].trim(), 120), detail: clip(split[2].trim(), 240) }
-        : { title: clip(line, 120), detail: "" }
+      if (!split) return { title: clip(line, 120), detail: "" }
+
+      // Manche Modelle stellen die Richtung selbst voran ("Erweitern — …").
+      // Dann ist der Kopf die Richtung und der Rest der Titel, nicht umgekehrt.
+      const kind = kindOf(split[1])
+      if (kind) return { title: clip(split[2].trim(), 120), detail: withKind(kind, "") }
+
+      return { title: clip(split[1].trim(), 120), detail: clip(split[2].trim(), 240) }
     })
+    const normalized = normalizeSuggestions(items)
+    if (normalized.length) return normalized
   }
 
-  return [{ title: clip(text, 120), detail: "" }]
+  return normalizeSuggestions([{ title: clip(text, 120), detail: "" }])
 }
 
 /**
@@ -418,14 +485,19 @@ export default {
       pending = true
       try {
         const generated = await client.session.generate({ sessionID, prompt: buildPrompt(evidence, focus) })
-        const suggestions = parseSuggestions(generated?.text ?? generated)
+
+        // Zweite, belegbasierte Bremse: das Modell darf sich an der Obergrenze
+        // nicht vorbeireden. Bei mehr Vorschlägen als die Session trägt, fliegt
+        // der Rest hier raus.
+        const suggestions = parseSuggestions(generated?.text ?? generated).slice(0, suggestionBudget(evidence))
 
         if (!suggestions.length) {
           toast("Die Belege geben keinen nächsten Schritt her", "info")
           return true
         }
 
-        const title = evidence.mode === "Umsetzen" ? "Was als Nächstes? — auch abseits vom Faden" : "Was als Nächstes?"
+        const base = evidence.mode === "Umsetzen" ? "Was als Nächstes? — auch abseits vom Faden" : "Was als Nächstes?"
+        const title = `${base} (${suggestions.length})`
 
         // Als Formular statt als Overlay: das rendert inline im Verlauf, genau
         // wie eine Frage des question-Tools. Ein String-Feld MIT options ist der
