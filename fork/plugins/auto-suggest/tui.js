@@ -862,8 +862,36 @@ export default {
       })
     }, GUARD_MS)
 
+    // Sofort statt bis zu zwei Sekunden spaeter: das Ereignis meldet das neu
+    // angelegte Formular, und ohne Anforderungsmarke wird es auf der Stelle
+    // abgebrochen. Das greift auch fuer Formulare, die nicht ueber dieses
+    // Client-Objekt entstehen (etwa aus einem alten Zuhoerer mit aelterem
+    // Client) und die deshalb am Abfangen beim Anlegen vorbeikommen.
+    const onFormCreated = (event) => {
+      const form = event?.data?.form
+      if (!form?.id || form.sessionID === "global") return
+      if (form.metadata?.[REQUEST_MARK] === true) return
+      if (!(form.fields ?? []).some((field) => field?.key === FORM_KEY)) return
+      note({ action: "drop", sessionID: form.sessionID, form: form.id })
+      void cancelForm(client, form.sessionID, form.id)
+    }
+
+    let unsubscribeFormCreated
+    try {
+      unsubscribeFormCreated = data.on("form.created", onFormCreated)
+    } catch {
+      /* Ereignis nicht verfuegbar */
+    }
+
     return () => {
       clearInterval(guard)
+      if (typeof unsubscribeFormCreated === "function") {
+        try {
+          unsubscribeFormCreated()
+        } catch {
+          /* bereits abgemeldet */
+        }
+      }
     }
   },
 }
