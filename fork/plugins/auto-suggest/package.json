@@ -1,0 +1,8 @@
+{
+  "name": "opencode-plugin-auto-suggest",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Suggests next work steps from the session's own tool evidence",
+  "main": "tui.js"
+}
