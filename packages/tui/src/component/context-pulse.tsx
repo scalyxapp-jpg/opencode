@@ -1,7 +1,8 @@
 import { For, Show, createMemo } from "solid-js"
 import type { Plugin } from "@opencode/plugin/tui"
-import { Locale } from "../util/locale"
-import { contextTimeline, type ContextLevel, type ContextSample } from "../util/session"
+import { Locale, truncateWidth } from "../util/locale"
+import { contextTimeline, forecastContext, type ContextLevel, type ContextSample } from "../util/session"
+import { stuckTool, type StuckReport } from "../util/stuck"
 
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -23,7 +24,12 @@ const tone = (theme: Plugin.Context["theme"], level: ContextLevel) => {
  * Ohne Fixture liest die Komponente die Live-Daten des Contexts; mit Fixture
  * rendert die Storybook-Story dieselbe Komponente.
  */
-export function ContextPulse(props: { context: Plugin.Context; sessionID: string; fixture?: ContextSample[] }) {
+export function ContextPulse(props: {
+  context: Plugin.Context
+  sessionID: string
+  fixture?: ContextSample[]
+  fixtureStuck?: StuckReport
+}) {
   const theme = props.context.theme
 
   const samples = createMemo<ContextSample[]>(() => {
@@ -35,6 +41,30 @@ export function ContextPulse(props: { context: Plugin.Context; sessionID: string
       props.context.data.location.model.list(session.location),
       session.revert?.messageID,
     )
+  })
+
+  const limit = createMemo(() => {
+    if (props.fixture) {
+      // Im Fixture steht der Prozentwert, nicht das Limit — daraus zurückrechnen.
+      const last = props.fixture.at(-1)
+      if (!last?.percent) return undefined
+      return Math.round(last.tokens / (last.percent / 100))
+    }
+    const session = props.context.data.session.get(props.sessionID)
+    if (!session) return undefined
+    const models = props.context.data.location.model.list(session.location) ?? []
+    const last = props.context.data.session.message.list(props.sessionID).at(-1)
+    if (last?.type !== "assistant") return undefined
+    return models.find((model) => model.providerID === last.model.providerID && model.id === last.model.id)?.limit
+      .context
+  })
+
+  const forecast = createMemo(() => forecastContext(samples(), limit()))
+
+  const stuck = createMemo<StuckReport | undefined>(() => {
+    if (props.fixtureStuck) return props.fixtureStuck
+    if (props.fixture) return undefined
+    return stuckTool(props.context.data.session.message.list(props.sessionID))
   })
 
   // Die Sidebar ist 42 Spalten breit, davon bleiben nach Einrückung ~34.
@@ -83,6 +113,27 @@ export function ContextPulse(props: { context: Plugin.Context; sessionID: string
         <Show when={footer()}>
           {(value) => (
             <text fg={latest()?.level === "error" ? theme.text.feedback.error.base : theme.text.muted}>{value()}</text>
+          )}
+        </Show>
+
+        <Show when={stuck()}>
+          {(value) => (
+            <box flexDirection="column">
+              <text fg={theme.text.feedback.warning.base} wrapMode="none">
+                <b>! {value().tool} stuck</b>
+              </text>
+              <text fg={theme.text.muted} wrapMode="none">
+                {truncateWidth(`${value().attempts}x failed on ${value().target || "same input"}`, 36)}
+              </text>
+            </box>
+          )}
+        </Show>
+
+        <Show when={forecast()?.confidence === "low" ? undefined : forecast()?.turnsLeft}>
+          {(value) => (
+            <text fg={theme.text.muted} wrapMode="none">
+              ≈ {value()} more turns
+            </text>
           )}
         </Show>
 

@@ -51,6 +51,14 @@ const cases: { id: string; label: string; samples: ContextSample[] }[] = [
   },
 ]
 
+const STUCK = {
+  tool: "edit",
+  attempts: 4,
+  error: "oldString not found",
+  messageID: "msg_1",
+  target: "~/Documents/coding/torDloader/tor_manager.py",
+}
+
 function ContextPulseStory(props: { context: Plugin.Context }) {
   const dimensions = useTerminalDimensions()
   const theme = useTheme()
@@ -98,7 +106,7 @@ function ContextPulseStory(props: { context: Plugin.Context }) {
         paddingTop={1}
         paddingBottom={1}
       >
-        <ContextPulse context={props.context} sessionID="fixture" fixture={current().samples} />
+        <ContextPulse context={props.context} sessionID="fixture" fixture={current().samples} fixtureStuck={current().id === "creeping" ? STUCK : undefined} />
       </box>
 
       <box flexGrow={1} />

@@ -112,13 +112,13 @@ test("context pulse reacts to an appended turn", async () => {
     await app.renderOnce()
     const before = rows(app.captureCharFrame())
     expect(before[1]).toBe("\u2588".repeat(4))
-    expect(before[3]).toBe("4 turns")
+    expect(before.some((row) => row === "4 turns")).toBe(true)
 
     append(4)
     await app.renderOnce()
     const after = rows(app.captureCharFrame())
     expect(after[1]).toBe("\u2588".repeat(5))
-    expect(after[3]).toBe("5 turns")
+    expect(after.some((row) => row === "5 turns")).toBe(true)
     expect(after[2]).not.toBe(before[2])
   } finally {
     app.renderer.destroy()
@@ -139,7 +139,7 @@ test("a 35k message session renders within budget", async () => {
     const elapsed = performance.now() - started
     // Großzügige Schranke: sie greift nur bei einem Größenordnungs-Regress.
     expect(elapsed).toBeLessThan(400)
-    expect(rows(app.captureCharFrame())[3]).toBe("35000 turns")
+    expect(rows(app.captureCharFrame()).some((row) => row === "35000 turns")).toBe(true)
   } finally {
     app.renderer.destroy()
   }

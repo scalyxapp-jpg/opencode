@@ -192,3 +192,57 @@ const levelFor = (percent: number | undefined): ContextLevel => {
   if (percent >= WARNING_PERCENT) return "warning"
   return "ok"
 }
+
+export type ContextForecast = {
+  /** Median des Wachstums pro Turn. */
+  perTurn: number
+  /** Verbleibende Turns bis zum Limit, undefined wenn kein Limit bekannt. */
+  turnsLeft: number | undefined
+  confidence: "low" | "medium" | "high"
+  /** Anzahl der Turns, aus denen extrapoliert wurde. */
+  window: number
+}
+
+/**
+ * Prognose, wann der Kontext das Limit erreicht — aus der Wachstumsrate der
+ * letzten Turns.
+ *
+ * Verwendet den Median statt des Mittelwerts: ein einzelner Riesenturn (großer
+ * eingefügter Block) soll die Prognose nicht verzerren. Sobald im Fenster eine
+ * Kompaktierung lag, ist die Rate nicht mehr extrapolierbar und die Zuversicht
+ * sinkt auf "low" — dann zeigt die UI die Prognose gar nicht erst an.
+ */
+export function forecastContext(
+  samples: ReadonlyArray<ContextSample>,
+  limit: number | undefined,
+  window = 6,
+): ContextForecast | undefined {
+  if (samples.length < 3) return
+  const recent = samples.slice(-window)
+  const deltas: number[] = []
+  for (let i = 1; i < recent.length; i++) {
+    deltas.push(recent[i]!.tokens - recent[i - 1]!.tokens)
+  }
+  if (deltas.length === 0) return
+
+  const sorted = [...deltas].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  const median = sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!
+
+  const compacted = recent.slice(1).some((sample) => sample.compacted)
+  const current = samples.at(-1)!.tokens
+  const headroom = limit === undefined ? undefined : limit - current
+
+  // Wachstum <= 0 heißt: der Verlauf fällt oder steht. Dann gibt es nichts zu
+  // prognostizieren — "unendlich Turns" wäre eine Augenauswischerei.
+  if (median <= 0) {
+    return { perTurn: median, turnsLeft: undefined, confidence: "low", window: deltas.length }
+  }
+
+  return {
+    perTurn: median,
+    turnsLeft: headroom === undefined ? undefined : headroom <= 0 ? 0 : Math.floor(headroom / median),
+    confidence: compacted ? "low" : deltas.length >= 4 ? "high" : "medium",
+    window: deltas.length,
+  }
+}
