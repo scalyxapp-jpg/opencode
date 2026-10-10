@@ -89,6 +89,26 @@ Optionsliste.
 oberster Ebene. Anders gelesen scheitert der Aufruf mit
 `Expected string | null at ["id"]`.
 
+### Projektmodus: `/nextProject`
+
+```
+/nextProject              Vorschläge aus dem ganzen Projekt
+/nextProject <fokus>      mit besonderem Augenmerk
+```
+
+Liest das Projekt ab dem Verzeichnis der Session — verzeichnisweise, ohne
+`node_modules`, `.git`, `dist` und Ähnliches, ohne Binärdateien, begrenzt auf
+160 Verzeichnisse, 500 Dateien und Tiefe 8. Danach werden die zehn Dateien
+gelesen, die über das Projekt am meisten sagen (README, AGENTS, Manifeste,
+Dockerfile, …), jede gekürzt. Erst der Baum, dann die Schlüsseldateien: jede
+Stufe meldet ihren Fortschritt als Hinweis, weil das dauern kann.
+
+Das Modell bekommt Baum und Auszüge und antwortet mit einer Übersicht und den
+Vorschlägen (dieselbe Form wie sonst, zusätzlich `summary`). Die Übersicht steht
+im Formular (als `metadata.message`) und wandert zusätzlich in den
+Zusammenhang jedes Auftrags, damit der Agent weiß, worauf er sich bezieht.
+Scheitert die Abfrage, greifen wie bei `/next` die belegbasierten Vorschläge.
+
 ### Es öffnet sich nichts von selbst
 
 Vorschläge kommen **ausschließlich** über `/next` (oder den Befehl

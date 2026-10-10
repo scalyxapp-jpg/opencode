@@ -437,7 +437,7 @@ function parseSuggestions(raw) {
  * einen `prompt` (s. buildPrompt), und hier wird zusaetzlich der belegte
  * Sessionzusammenhang angehaengt — auch dann, wenn kein `prompt` vorliegt.
  */
-function composeTask(evidence, suggestion, batch) {
+function composeTask(evidence, suggestion, batch, extra) {
   const title = String(suggestion?.title ?? "").trim()
   const detail = String(suggestion?.detail ?? "").trim()
   const written = String(suggestion?.prompt ?? "").trim()
@@ -459,7 +459,7 @@ function composeTask(evidence, suggestion, batch) {
   const head = [title, separate ? `Aufgabe ${batch.index} von ${batch.total} — eigenständig` : ""]
     .filter(Boolean)
     .join("\n")
-  return [head, "", body, "", taskContext(evidence), "", separate ? taskFrame(batch) : ""]
+  return [head, "", body, "", taskContext(evidence, extra), "", separate ? taskFrame(batch) : ""]
     .filter((part) => part !== "")
     .join("\n")
 }
@@ -482,7 +482,7 @@ function taskFrame(batch) {
 }
 
 /** Der belegte Zusammenhang dieser Session, in kurzer, klarer Form. */
-function taskContext(evidence) {
+function taskContext(evidence, extra) {
   const lines = ["Zusammenhang aus dieser Session (belegt, nicht geraten):"]
   lines.push(`- Arbeitsmodus: ${evidence.mode}`)
   if (evidence.root) lines.push(`- Arbeitsverzeichnis: ${evidence.root}`)
@@ -496,6 +496,7 @@ function taskContext(evidence) {
   }
   if (evidence.asks.length) lines.push(`- Letzte Anfragen des Nutzers: ${evidence.asks.join(" | ")}`)
   if (evidence.signals.length) lines.push(`- Beobachtete Lücken: ${evidence.signals.join("; ")}`)
+  for (const line of extra ?? []) lines.push(`- ${line}`)
   return lines.join("\n")
 }
 
@@ -545,6 +546,170 @@ function fallbackSuggestions(evidence) {
     add("Fortsetzen", "Am letzten Stand weitermachen", `Zuletzt im Spiel: ${files.join(", ")}.`)
 
   return list
+}
+
+// Projektmodus: Verzeichnisse, die nie zum Lesen taugen, und Dateien, die kein
+// Text sind. Der Baum wird begrenzt, damit eine grosse Ablage nicht ausartet.
+const PROJECT_IGNORE = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "out",
+  "target",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".next",
+  ".turbo",
+  ".cache",
+  "coverage",
+  "vendor",
+  ".idea",
+  ".vscode",
+  ".ruff_cache",
+  ".gradle",
+  "Pods",
+  ".terraform",
+  ".nuxt",
+  ".output",
+])
+const PROJECT_SKIP_FILE =
+  /\.(png|jpe?g|gif|webp|svg|ico|pdf|zip|gz|tgz|tar|7z|rar|mp3|mp4|mov|avi|wav|woff2?|ttf|otf|eot|so|dylib|dll|exe|bin|jar|class|o|a|lock|db|sqlite3?|wasm|map|snap)$/i
+const PROJECT_KEY_FILE =
+  /(^|\/)(readme[^/]*|agents\.md|contributing[^/]*|changelog[^/]*|package\.json|pyproject\.toml|cargo\.toml|go\.mod|pom\.xml|build\.gradle(\.kts)?|composer\.json|gemfile|dockerfile|makefile|justfile|tsconfig\.json)$/i
+const PROJECT_LIMITS = { directories: 160, files: 500, keyFiles: 10, keyChars: 1800, treeChars: 14000, depth: 8 }
+
+/**
+ * Ein Verzeichnis lesen. Fehler sind hier normal (Rechte, Wettlauf) und werden
+ * als leer behandelt: der Ueberblick soll auch mit Luecken entstehen.
+ */
+async function listProjectDirectory(client, root, path) {
+  try {
+    const response = await client.file.list({ directory: root, path: path || "." })
+    const entries = Array.isArray(response) ? response : (response?.data ?? [])
+    return Array.isArray(entries) ? entries : []
+  } catch {
+    return []
+  }
+}
+
+/** Den Dateibaum ab dem Projektverzeichnis einsammeln, verzeichnisweise. */
+async function readProjectTree(client, root, onProgress) {
+  const files = []
+  const queue = [""]
+  let directories = 0
+  while (queue.length && directories < PROJECT_LIMITS.directories && files.length < PROJECT_LIMITS.files) {
+    const batch = queue.splice(0, 6)
+    const listings = await Promise.all(batch.map((dir) => listProjectDirectory(client, root, dir)))
+    for (const [index, entries] of listings.entries()) {
+      directories++
+      const dir = batch[index]
+      for (const entry of entries) {
+        const name = String(entry?.path ?? "")
+          .split("/")
+          .pop()
+        if (!name) continue
+        const path = dir ? `${dir}/${name}` : name
+        if (entry?.type === "directory") {
+          if (PROJECT_IGNORE.has(name)) continue
+          if (path.split("/").length >= PROJECT_LIMITS.depth) continue
+          queue.push(path)
+          continue
+        }
+        if (PROJECT_SKIP_FILE.test(name)) continue
+        files.push(path)
+        if (files.length >= PROJECT_LIMITS.files) break
+      }
+    }
+    onProgress?.(directories, files.length)
+  }
+  return files.sort()
+}
+
+/** Eine Textdatei lesen; alles, was keine Zeichenkette ergibt, bleibt weg. */
+async function readProjectFile(client, root, path) {
+  try {
+    const response = await client.file.read({ directory: root, path })
+    if (typeof response === "string") return response
+    const bytes = response?.data ?? response
+    if (bytes instanceof Uint8Array) return new TextDecoder().decode(bytes)
+    if (bytes instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(bytes))
+    return ""
+  } catch {
+    return ""
+  }
+}
+
+/** Die wenigen Dateien lesen, die ueber das Projekt am meisten sagen. */
+async function readProjectKeyFiles(client, root, files, onProgress) {
+  const wanted = files
+    .map((path) => ({ path, rank: PROJECT_KEY_FILE.test(path) ? 0 : 1 }))
+    .sort((left, right) => left.rank - right.rank || left.path.localeCompare(right.path))
+    .slice(0, PROJECT_LIMITS.keyFiles)
+
+  const parts = []
+  for (const [index, item] of wanted.entries()) {
+    const text = (await readProjectFile(client, root, item.path)).trim()
+    if (text) parts.push(`--- ${item.path}\n${clip(text, PROJECT_LIMITS.keyChars)}`)
+    onProgress?.(index + 1, wanted.length)
+  }
+  return parts
+}
+
+/** Antwort des Projektmodus: Uebersicht plus Vorschlaege. */
+function parseProjectReport(raw) {
+  const text = String(raw ?? "").trim()
+  const fenced = /```(?:json)?\s*(\{[\s\S]*\})\s*```/.exec(text)
+  const candidate = fenced?.[1] ?? objectSlice(text)
+  if (candidate) {
+    try {
+      const parsed = JSON.parse(candidate)
+      if (parsed && !Array.isArray(parsed) && typeof parsed === "object") {
+        return {
+          summary: clip(String(parsed.summary ?? parsed.ueberblick ?? "").trim(), 1200),
+          suggestions: parseSuggestions(JSON.stringify(parsed.suggestions ?? [])),
+        }
+      }
+    } catch {
+      /* dann bleibt nur der Vorschlagsteil */
+    }
+  }
+  return { summary: "", suggestions: parseSuggestions(raw) }
+}
+
+function objectSlice(text) {
+  const start = text.indexOf("{")
+  const end = text.lastIndexOf("}")
+  return start !== -1 && end > start ? text.slice(start, end + 1) : ""
+}
+
+function buildProjectPrompt(root, files, keyFiles, focus) {
+  const budget = PROJECT_LIMITS.keyFiles
+  return [
+    "AUFGABE: Verschaffe dir einen Überblick über dieses Projekt und schlage danach die nächsten Arbeiten vor.",
+    'Antworte ausschließlich mit einem JSON-Objekt der Form {"summary":"…","suggestions":[…]}, ohne Codezaun, ohne Vorwort.',
+    "`summary` ordnet das Projekt in 4 bis 8 Sätzen ein: wozu es dient, wie es aufgebaut ist, welche Technik es nutzt, wie weit es ist und was offensichtlich fehlt.",
+    "`suggestions` ist ein Array mit höchstens " +
+      MAX_SUGGESTIONS +
+      " Einträgen, jeweils {kind, title, detail, prompt}.",
+    '`kind` ist genau einer von: "Erweitern", "Vertiefen", "Fortsetzen", "Absichern". Schwerpunkt ist der Ausbau, Absicherung die Ausnahme.',
+    "`prompt` ist der fertige Auftrag, der später wortgleich in den Chat geht: mehrere Sätze, für sich verständlich, mit Ziel, betroffenen Dateien und woran die Fertigstellung zu erkennen ist.",
+    "Stütze dich ausschließlich auf das, was unten steht; erfinde keine Dateien und keine Probleme. Nenne eine Datei nur, wenn sie im Baum vorkommt.",
+    "Wenn das Projekt zu wenig hergibt, liefere weniger Vorschläge statt geratener.",
+    focus ? `Besonderes Augenmerk: ${focus}` : "",
+    "",
+    `PROJEKTVERZEICHNIS: ${root}`,
+    `DATEIEN IM BAUM (${files.length}, gekürzt):`,
+    clip(files.join("\n"), PROJECT_LIMITS.treeChars),
+    "",
+    `SCHLÜSSELDATEIEN (${keyFiles.length} von höchstens ${budget}, gekürzt):`,
+    keyFiles.join("\n\n") || "(keine lesbare Schlüsseldatei gefunden)",
+    "",
+    "Das erste Zeichen deiner Antwort ist { und das letzte }.",
+  ]
+    .filter((line) => line !== "")
+    .join("\n")
 }
 
 /**
@@ -641,7 +806,7 @@ export default {
   id: "auto-suggest",
 
   async setup(context) {
-    const { client, data, ui, keymap, storage } = context
+    const { client, data, ui, keymap, storage, location } = context
 
     // Alte Zuhoerer teilen sich dieses Client-Objekt und legen weiter Formulare
     // an. Deshalb wird das Anlegen abgefangen: ohne Anforderungsmarke entsteht
@@ -692,6 +857,68 @@ export default {
           evidence.asks.length >
         0
       return { evidence, grounded }
+    }
+
+    /** Das Projektverzeichnis dieser Session, so genau wie die API es hergibt. */
+    const sessionDirectory = (sessionID) => {
+      try {
+        const info = data.session.get?.(sessionID)
+        const directory = info?.location?.directory ?? info?.directory
+        if (directory) return directory
+      } catch {
+        /* naechste Quelle */
+      }
+      try {
+        const root = data.session.root?.(sessionID)
+        if (root) return root
+      } catch {
+        /* naechste Quelle */
+      }
+      try {
+        const directory = location?.directory ?? location?.current?.directory
+        if (directory) return directory
+      } catch {
+        /* keine Quelle */
+      }
+      return undefined
+    }
+
+    /**
+     * Das Auswahlformular anlegen.
+     *
+     * `message` zeigt im Formular eine kurze Einordnung — im Projektmodus die
+     * Uebersicht. Die Anforderungsmarke gehoert immer dazu, nur so bleibt das
+     * Formular von der Wache unangetastet.
+     */
+    async function openSuggestionForm(sessionID, { suggestions, title, message }) {
+      const created = await client.session.form.create({
+        sessionID,
+        title,
+        metadata: { [FORM_OWNER]: INSTANCE_ID, [REQUEST_MARK]: true, ...(message ? { message } : {}) },
+        fields: [
+          {
+            key: FORM_KEY,
+            type: "multiselect",
+            title: "Vorschläge",
+            description: "Enter wählt an, Tab und Enter übernehmen alle gewählten",
+            required: true,
+            minItems: 1,
+            options: suggestions.map((suggestion) => ({
+              value: suggestion.title,
+              label: suggestion.title,
+              description: suggestion.detail || undefined,
+            })),
+          },
+        ],
+      })
+
+      const formID = created?.id ?? created?.form?.id
+      if (!formID) {
+        toast("Formular konnte nicht angelegt werden", "warning")
+        return undefined
+      }
+      note({ action: "opened", sessionID, form: formID, count: suggestions.length })
+      return formID
     }
 
     async function ask(sessionID, focus) {
@@ -754,34 +981,8 @@ export default {
         // `id` ist nur eine optionale Formular-Kennung; Titel und Felder stehen
         // auf oberster Ebene. Anders gelesen scheitert der Aufruf mit
         // "Expected string | null at ["id"]".
-        const created = await client.session.form.create({
-          sessionID,
-          title,
-          metadata: { [FORM_OWNER]: INSTANCE_ID, [REQUEST_MARK]: true },
-          fields: [
-            {
-              key: FORM_KEY,
-              type: "multiselect",
-              title: "Vorschläge",
-              description: "Enter wählt an, Tab und Enter übernehmen alle gewählten",
-              required: true,
-              minItems: 1,
-              options: suggestions.map((suggestion) => ({
-                value: suggestion.title,
-                label: suggestion.title,
-                description: suggestion.detail || undefined,
-              })),
-            },
-          ],
-        })
-
-        const formID = created?.id ?? created?.form?.id
-        if (!formID) {
-          toast("Formular konnte nicht angelegt werden", "warning")
-          return false
-        }
-
-        note({ action: "opened", sessionID, form: formID, count: suggestions.length })
+        const formID = await openSuggestionForm(sessionID, { suggestions, title })
+        if (!formID) return false
 
         // Hat ein zweites Fenster gleichzeitig angelegt, bleibt genau eines
         // stehen — und zwar dasselbe in beiden Fenstern (das aelteste). Wer es
@@ -814,7 +1015,7 @@ export default {
      * als eine Anfrage mit Reihenfolge raus: daraus wird ein Turn statt
      * mehrerer, und der Agent kann die Arbeit selbst aufteilen.
      */
-    async function submitSelection(sessionID, form, suggestions, evidence) {
+    async function submitSelection(sessionID, form, suggestions, evidence, extra) {
       const picked = await waitForAnswer(client, sessionID, form.id)
       if (!picked.length || !form.owned) return
 
@@ -827,11 +1028,92 @@ export default {
         const suggestion = known.get(title) ?? { title, detail: "", prompt: "" }
         await client.session.prompt({
           sessionID,
-          text: composeTask(evidence, suggestion, { index: index + 1, total: picked.length }),
+          text: composeTask(evidence, suggestion, { index: index + 1, total: picked.length }, extra),
           ...(index === 0 ? {} : { delivery: "queue" }),
         })
       }
       note({ action: "submitted", sessionID, count: picked.length })
+    }
+
+    /**
+     * Vorschlaege aus dem ganzen Projekt statt nur aus dieser Session.
+     *
+     * Liest den Baum ab dem Projektverzeichnis, dazu die wenigen Dateien, die
+     * ueber das Projekt am meisten sagen, laesst beides zusammenfassen und baut
+     * daraus die Vorschlaege. Weil das dauert, meldet jeder Schritt seinen
+     * Fortschritt.
+     */
+    async function askProject(sessionID, focus) {
+      if (pending || !sessionID) return false
+
+      const root = sessionDirectory(sessionID)
+      if (!root) {
+        toast("Kein Projektverzeichnis gefunden", "warning")
+        return false
+      }
+
+      const { evidence } = readEvidence(sessionID)
+      pending = true
+      try {
+        toast(`Projekt lesen: ${root}`, "info")
+        const files = await readProjectTree(client, root, (directories, count) => {
+          if ((directories + count) % 10 !== 0) return
+          toast(`Projekt lesen … ${directories} Verzeichnisse, ${count} Dateien`, "info")
+        })
+        if (!files.length) {
+          toast("Im Projektverzeichnis wurde nichts Lesbares gefunden", "warning")
+          return true
+        }
+
+        toast(`Projektbaum gelesen: ${files.length} Dateien — Schlüsseldateien folgen`, "info")
+        const keyFiles = await readProjectKeyFiles(client, root, files, (done, total) => {
+          toast(`Schlüsseldateien ${done}/${total}`, "info")
+        })
+
+        toast("Fasse das Projekt zusammen und baue Vorschläge …", "info")
+        let generated
+        try {
+          generated = await client.session.generate({
+            sessionID,
+            prompt: buildProjectPrompt(root, files, keyFiles, focus),
+          })
+        } catch (cause) {
+          toast(`Modell nicht erreichbar (${cause?.message ?? cause}) — Vorschläge aus den Belegen`, "warning")
+        }
+
+        const report = generated ? parseProjectReport(generated?.text ?? generated) : { summary: "", suggestions: [] }
+        const suggestions = (report.suggestions.length ? report.suggestions : fallbackSuggestions(evidence)).slice(
+          0,
+          MAX_SUGGESTIONS,
+        )
+        if (!suggestions.length) {
+          toast("Das Projekt gibt keinen nächsten Schritt her", "info")
+          return true
+        }
+
+        const extra = [
+          `Projektverzeichnis: ${root}`,
+          `Gelesene Projektdateien: ${files.length}`,
+          report.summary ? `Projektübersicht: ${report.summary}` : "",
+        ].filter(Boolean)
+
+        const formID = await openSuggestionForm(sessionID, {
+          suggestions,
+          title: `Nächste Schritte im Projekt (${suggestions.length})`,
+          message: report.summary ? clip(report.summary, 400) : `Projektüberblick über ${files.length} Dateien`,
+        })
+        if (!formID) return false
+
+        const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true, removed: 0 }
+        if (!sole.owned) return true
+        await submitSelection(sessionID, sole, suggestions, evidence, extra)
+        return true
+      } catch (cause) {
+        toast(String(cause?.message ?? cause), "error")
+        return false
+      } finally {
+        pending = false
+      }
     }
 
     // Slash-Kommando und Palette-Eintrag.
@@ -852,6 +1134,22 @@ export default {
               return
             }
             void ask(sessionID, typeof input === "string" ? input.trim() || undefined : undefined)
+          },
+        },
+        {
+          id: "session.suggestProject",
+          title: "Suggest next steps for the whole project",
+          description: "Liest das Projektverzeichnis, fasst es zusammen und schlägt nächste Schritte vor",
+          group: "Session",
+          palette: true,
+          slash: { name: "nextProject", arguments: true },
+          run(input) {
+            const sessionID = currentSession()
+            if (!sessionID) {
+              toast("Open a session first", "warning")
+              return
+            }
+            void askProject(sessionID, typeof input === "string" ? input.trim() || undefined : undefined)
           },
         },
       ],
