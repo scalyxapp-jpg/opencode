@@ -1051,6 +1051,30 @@ const AREA_TEMPLATES = {
   },
 }
 
+/**
+ * Die beiden Kernbereiche gelten immer.
+ *
+ * Oberflaeche und Architektur sind die Bereiche, die ein Projekt am meisten
+ * voranbringen — und die am leichtesten uebersehen werden, wenn die Pfade sie
+ * nicht verraten (ein flaches Projekt hat kein `components/` und kein
+ * `packages/`). Deshalb werden sie ergaenzt, wenn die Erkennung sie nicht
+ * findet; als Belege dienen dann die sprechendsten vorhandenen Dateien.
+ */
+function ensureCoreAreas(areas, files) {
+  const result = [...areas]
+  for (const key of ["gui", "architecture"]) {
+    if (result.some((area) => area.key === key)) continue
+    const definition = PROJECT_AREAS.find((area) => area.key === key)
+    if (!definition) continue
+    const samples = files
+      .filter((path) => !PROJECT_SKIP_FILE.test(path))
+      .sort((left, right) => left.split("/").length - right.split("/").length || left.localeCompare(right))
+      .slice(0, 3)
+    result.push({ ...definition, samples: samples.length ? samples : ["(kein sprechender Pfad gefunden)"] })
+  }
+  return result
+}
+
 function detectAreas(files) {
   return PROJECT_AREAS.map((area) => ({
     ...area,
@@ -1548,7 +1572,7 @@ export default {
         const report = generated ? parseProjectReport(generated?.text ?? generated) : { summary: "", suggestions: [] }
         const suggestions = ensureAreaSuggestions(
           technicalOnly(report.suggestions.length ? report.suggestions : projectFallback(files, evidence), evidence),
-          analysis.areas,
+          ensureCoreAreas(analysis.areas, analysis.files),
           suggestionBudget(evidence),
         ).slice(0, MAX_SUGGESTIONS)
         if (!suggestions.length) {
