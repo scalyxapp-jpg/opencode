@@ -57,17 +57,61 @@ Das Feld trägt `title: "Vorschlag"`. Die verbleibende Feldüberschrift ist
 oberster Ebene. Anders gelesen scheitert der Aufruf mit
 `Expected string | null at ["id"]`.
 
-Zusätzlich öffnet sich die Auswahl automatisch nach `session.idle`, sofern
-Belege vorliegen und der Turn nicht schon beantwortet wurde.
+Zusätzlich öffnet sich die Auswahl automatisch nach `session.idle` — aber nur,
+wenn mindestens zwei Auswertungs-Turns vorliegen und in der Session wirklich
+etwas passiert ist (Datei geändert, Befehl ausgeführt oder Fehlschlag), und
+höchstens einmal pro Turn. Sonst käme der Vorschlag aus dem Nichts.
+
+## Woraus die Vorschläge entstehen
+
+Das Plugin liest die Nachrichten der laufenden Session und verdichtet sie zu
+Belegen. Es liest **beide Seiten**: die letzten vier Anfragen des Nutzers
+(wörtlich) und die Werkzeugaufrufe des Assistenten.
+
+| Beleg                | Quelle                                                       |
+| -------------------- | ------------------------------------------------------------ |
+| Geänderte Dateien    | `edit`, `write`, `patch`                                     |
+| Nur gelesene Dateien | `read`, `glob`, `grep` — sofern später nicht geändert        |
+| Tests im Spiel       | Namen mit `test`/`spec` (`_test.go`, `Test*.java`, `*.spec`) |
+| Dokumentation        | geänderte `.md`, `.mdx`, `.rst`, `.txt`                      |
+| Abhängigkeiten       | `package.json`, `Cargo.toml`, `go.mod`, `build.gradle`, …    |
+| Befehle              | `bash`, `shell`                                              |
+| Fehlschläge          | Aufrufe, die mit einem Fehler endeten                        |
+| Plan                 | `todowrite`, `todoread`, `task`                              |
+
+Daraus leitet es einen **Arbeitsmodus** ab — `Fehlersuche`, `Prüfen`,
+`Dokumentieren`, `Umsetzen` oder `Erkunden` — und **beobachtete Lücken**, etwa
+„Code wurde geändert, aber keine Testdatei angefasst“ oder „Es wurde geändert,
+aber kein Befehl ausgeführt — nichts verifiziert“. Das Arbeitsverzeichnis
+bestimmt es aus dem gemeinsamen Elternpfad der belegten Dateien.
+
+## Vier Richtungen statt einem Faden
+
+Das Modell soll **nicht** stumpf den Faden fortsetzen. Jeder Vorschlag trägt
+eine Richtung, die vorn im Detail steht:
+
+| Richtung     | Bedeutung                               |
+| ------------ | --------------------------------------- |
+| `Fortsetzen` | der begonnene Faden                     |
+| `Absichern`  | Tests, Fehlerfälle, Verifikation        |
+| `Vertiefen`  | Aufräumen, Vereinfachen, Robustheit     |
+| `Erweitern`  | neue Funktion, Anschluss, Ausbauschritt |
+
+Der Auftrag verlangt vier bis fünf Vorschläge und **höchstens zwei
+`Fortsetzen`** — der Rest muss streuen. Erfundene Dateien, Funktionen oder
+Tests sind untersagt: wer eine Datei nennt, muss sie aus den Belegen haben.
+Die Anweisung steht **vor und nach** den Belegen, sonst setzt das Modell den
+Verlauf fort, statt zu antworten.
 
 ## Unterschiede zur Fassung im TUI-Quellbaum
 
-|                             | Quellbaum            | Plugin                      |
-| --------------------------- | -------------------- | --------------------------- |
-| Vorschlag landet            | im Composer, prüfbar | wird abgeschickt            |
-| "Nutzer tippt gerade"-Guard | ja (`usePromptRef`)  | **nein, nicht ermittelbar** |
-| Steuerung des Auto-Modus    | Experiment-Schalter  | immer an                    |
-| Belege, Parser, Auftrag     | identisch            | identisch                   |
+|                             | Quellbaum            | Plugin                         |
+| --------------------------- | -------------------- | ------------------------------ |
+| Vorschlag landet            | im Composer, prüfbar | wird abgeschickt               |
+| "Nutzer tippt gerade"-Guard | ja (`usePromptRef`)  | **nein, nicht ermittelbar**    |
+| Steuerung des Auto-Modus    | Experiment-Schalter  | immer an                       |
+| Beleganalyse                | einfacher            | Modus, Lücken, vier Richtungen |
+| Parser und Formular         | identisch            | identisch                      |
 
 Der fehlende Tippen-Guard ist der Preis der externen API. Abgefangen wird das
 nur durch "einmal pro Turn" — ein Dialog kann also aufgehen, während getippt
