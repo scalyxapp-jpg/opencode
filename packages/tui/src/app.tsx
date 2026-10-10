@@ -62,6 +62,7 @@ import { useConnected } from "./component/use-connected"
 import { DialogMcp } from "./component/dialog-mcp"
 import { DialogStatus } from "./component/dialog-status"
 import { DialogCost } from "./component/dialog-cost"
+import { DialogExperiments } from "./component/dialog-experiments"
 import { DialogConfig } from "./component/dialog-config"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogPair } from "./component/dialog-pair"
@@ -983,6 +984,16 @@ function App() {
         slash: { name: "cost" },
         run: () => {
           dialog.replace(() => <DialogCost />)
+        },
+        category: "System",
+      },
+      {
+        name: "opencode.experiments",
+        title: "Toggle experiments",
+        description: "Opt-in Verhalten ein- und ausschalten",
+        slash: { name: "experiments" },
+        run: () => {
+          dialog.replace(() => <DialogExperiments />)
         },
         category: "System",
       },

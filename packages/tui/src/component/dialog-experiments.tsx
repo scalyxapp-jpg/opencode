@@ -26,7 +26,9 @@ export function DialogExperiments() {
   const config = useConfig()
   const theme = useTheme()
   const toast = useToast()
-  const [selected, setSelected] = createSignal<Experiment>()
+  // Mit dem ersten Eintrag vorbelegt: `change()` arbeitet auf `selected()`, und
+  // ohne Vorbelegung tun ←/→ nichts, bis einmal navigiert wurde.
+  const [selected, setSelected] = createSignal<Experiment | undefined>(experiments[0])
   const [saving, setSaving] = createSignal(false)
 
   const enabled = (experiment: Experiment) => config.data.experimental?.[experiment.id] === true
