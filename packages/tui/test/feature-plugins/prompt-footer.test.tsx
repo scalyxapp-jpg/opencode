@@ -4,7 +4,9 @@ import { RGBA, TextRenderable } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import type { Context } from "@opencode/plugin/tui/context"
 import { createSignal } from "solid-js"
+import { createStore } from "solid-js/store"
 import { PromptFooter } from "../../src/feature-plugins/prompt/footer"
+import { PromptRefProvider, usePromptRef } from "../../src/context/prompt"
 
 test("prompt footer separates simultaneous subagent, shell, and usage status", async () => {
   const color = RGBA.fromInts(200, 200, 200)
@@ -40,7 +42,11 @@ test("prompt footer separates simultaneous subagent, shell, and usage status", a
     },
   } as unknown as Context
   const app = await testRender(
-    () => <PromptFooter context={context} sessionID="session" mode="normal" showDetails={true} />,
+    () => (
+      <PromptRefProvider>
+        <PromptFooter context={context} sessionID="session" mode="normal" showDetails={true} />
+      </PromptRefProvider>
+    ),
     {
       width: 80,
       height: 2,
@@ -109,7 +115,9 @@ test("prompt footer can hide details", async () => {
   const app = await testRender(
     () => (
       <box width="100%" flexDirection="row" justifyContent="space-between" gap={2}>
-        <PromptFooter context={context} sessionID={sessionID()} mode="normal" showDetails={showDetails()} />
+        <PromptRefProvider>
+          <PromptFooter context={context} sessionID={sessionID()} mode="normal" showDetails={showDetails()} />
+        </PromptRefProvider>
       </box>
     ),
     {
@@ -190,7 +198,11 @@ test("prompt footer escalates context pressure color", async () => {
   } as unknown as Context
 
   const app = await testRender(
-    () => <PromptFooter context={context} sessionID="session" mode="normal" showDetails={true} />,
+    () => (
+      <PromptRefProvider>
+        <PromptFooter context={context} sessionID="session" mode="normal" showDetails={true} />
+      </PromptRefProvider>
+    ),
     { width: 80, height: 1 },
   )
 
@@ -229,6 +241,78 @@ test("prompt footer escalates context pressure color", async () => {
 
     setTokens(9_500)
     expect(await usageColor()).toEqual(error.toInts())
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+/**
+ * Integration des Prompt-Checks in die Footerzeile. Der Test setzt den
+ * PromptRef echt, nicht als Attrappe — genau die Verbindung, die zuvor an einer
+ * nicht-reaktiven Variable im Provider scheiterte.
+ */
+test("prompt footer hints when the prompt is unanchored", async () => {
+  const color = RGBA.fromInts(200, 200, 200)
+  const muted = RGBA.fromInts(100, 100, 100)
+  const warning = RGBA.fromInts(220, 180, 60)
+  const context = {
+    location: { directory: "/workspace" },
+    theme: {
+      text: {
+        base: color,
+        muted,
+        feedback: {
+          success: { base: color },
+          warning: { base: warning },
+          error: { base: color },
+        },
+      },
+    },
+    keymap: { shortcuts: () => [] },
+    data: {
+      session: {
+        family: () => ["session"],
+        status: () => "idle",
+        get: () => ({ id: "session", location: { directory: "/workspace" } }),
+        cost: () => 0,
+        message: { list: () => [] },
+      },
+      shell: { list: () => [] },
+      location: { model: { list: () => [] } },
+    },
+  } as unknown as Context
+
+  const TASK =
+    "analysiere im web und finde heraus welcher mcp server noetigt wird damit opencode binaries debuggen kann"
+  // In der echten App ist PromptInfo ein Store, deshalb ist `.text` reaktiv.
+  const [draft, setDraft] = createStore({ text: "" })
+  const Bridge = () => {
+    // Synchron im Render, damit der Ref steht, bevor der Footer sein Memo baut.
+    usePromptRef().set({ current: draft } as never)
+    return null
+  }
+
+  const app = await testRender(
+    () => (
+      <PromptRefProvider>
+        <Bridge />
+        <PromptFooter context={context} sessionID="session" mode="normal" showDetails={true} />
+      </PromptRefProvider>
+    ),
+    { width: 120, height: 1 },
+  )
+
+  try {
+    await app.renderOnce()
+    expect(app.captureCharFrame()).not.toContain("genannt (Median 5 statt 1 Fehler)")
+
+    setDraft("text", TASK)
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("genannt (Median 5 statt 1 Fehler)")
+
+    setDraft("text", "passe packages/tui/src/util/session.ts an, danach muss bun typecheck gruen sein")
+    await app.renderOnce()
+    expect(app.captureCharFrame()).not.toContain("genannt (Median 5 statt 1 Fehler)")
   } finally {
     app.renderer.destroy()
   }

@@ -1,6 +1,8 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, Match, Show, Switch } from "solid-js"
 import { contextPressure, formatContextPressure } from "../../util/session"
+import { usePromptRef } from "../../context/prompt"
+import { analyzePrompt, verdictLine, worstLevel } from "../../util/prompt-check"
 import { useTerminalDimensions } from "@opentui/solid"
 import { stringWidth } from "../../util/string-width"
 
@@ -17,6 +19,14 @@ export function PromptFooter(props: {
 }) {
   const dimensions = useTerminalDimensions()
   const [liveHovered, setLiveHovered] = createSignal(false)
+  const promptRef = usePromptRef()
+  const promptHint = createMemo(() => {
+    const text = promptRef.current?.current.text
+    if (!text || !text.trim()) return undefined
+    const verdict = analyzePrompt(text)
+    if (!worstLevel(verdict)) return undefined
+    return { level: worstLevel(verdict), text: verdictLine(verdict) ?? "" }
+  })
   const subagents = createMemo(() => {
     if (!props.sessionID) return 0
     const count = props.context.data.session
@@ -70,7 +80,7 @@ export function PromptFooter(props: {
     <Switch>
       <Match when={props.mode === "normal"}>
         <Switch>
-          <Match when={live() || status().length > 0}>
+          <Match when={live() || status().length > 0 || (props.showDetails && promptHint())}>
             <box flexDirection="row" flexShrink={props.showDetails && layout().usage ? 0 : 1} minWidth={0}>
               <Show when={live()}>
                 <box
@@ -91,6 +101,22 @@ export function PromptFooter(props: {
                     <Show when={shells()}>{(value) => <>{value()}</>}</Show>
                   </text>
                 </box>
+              </Show>
+              <Show when={props.showDetails && promptHint()}>
+                {(hint) => (
+                  <box flexShrink={0}>
+                    <text
+                      fg={
+                        hint().level === "warn"
+                          ? props.context.theme.text.feedback.warning.base
+                          : props.context.theme.text.muted
+                      }
+                      wrapMode="none"
+                    >
+                      {hint().text}
+                    </text>
+                  </box>
+                )}
               </Show>
               <Show when={props.showDetails && layout().usage && status().length > 0}>
                 <text fg={props.context.theme.text.muted} wrapMode="none" flexShrink={0}>
