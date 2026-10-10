@@ -594,6 +594,22 @@ export default {
 
   async setup(context) {
     const { client, data, ui, keymap, storage } = context
+
+    // Alte Zuhoerer teilen sich dieses Client-Objekt und legen weiter Formulare
+    // an. Deshalb wird das Anlegen abgefangen: ohne Anforderungsmarke entsteht
+    // gar kein Formular — statt eines, das die Wache erst wieder schliessen
+    // muss. Der Aufruf bleibt absichtlich ohne Abschluss, damit der alte
+    // Zuhoerer still bleibt statt einen Fehler zu melden.
+    const formApi = client?.session?.form
+    if (typeof formApi?.create === "function") {
+      const createForm = formApi.create.bind(formApi)
+      formApi.create = (input) =>
+        input?.metadata?.[REQUEST_MARK] === true
+          ? createForm(input)
+          : new Promise(() => {
+              /* absichtlich ohne Abschluss */
+            })
+    }
     let pending = false
 
     // Kennzeichnet die Formulare dieses Fensters. Mehrere offene Fenster hoeren
