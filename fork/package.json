@@ -1,0 +1,19 @@
+{
+  "name": "ocf",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "opencode fork CLI - session archaeology, cost ledger, environment doctor",
+  "module": "src/cli.ts",
+  "bin": {
+    "ocf": "./src/cli.ts"
+  },
+  "scripts": {
+    "doctor": "bun run src/cli.ts doctor",
+    "typecheck": "tsgo --noEmit",
+    "start": "bun run src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

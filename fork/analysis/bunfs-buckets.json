@@ -1,0 +1,10 @@
+{
+  "*.txt|md (Prompt-Preset)": 13,
+  "*.mp3 (Audio)": 5,
+  "chunk-*.js (Bundler-Chunks)": 397,
+  "*.scm (Syntax-Highlighting)": 6,
+  "*.so (Native Libraries)": 3,
+  "sonstige": 2,
+  "*.wasm (Nativ-Module)": 9,
+  "*.node (Natives Addons)": 1
+}

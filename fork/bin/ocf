@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# ocf — opencode fork CLI
+# Startet die Fork-Werkzeuge mit dem Bun-Runtime des Projekts.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$HERE")"
+
+BUN="$HOME/.bun/bin/bun"
+if [[ ! -x "$BUN" ]]; then
+  BUN="$(command -v bun || true)"
+fi
+if [[ -z "$BUN" ]]; then
+  echo "bun nicht gefunden. Installiere es mit: curl -fsSL https://bun.sh/install | bash" >&2
+  exit 1
+fi
+
+exec "$BUN" run "$ROOT/src/cli.ts" "$@"

@@ -1,0 +1,306 @@
+[
+  {
+    "idx": 0,
+    "name": "NULL",
+    "type": "0000000000000000",
+    "addr": 0,
+    "off": 0,
+    "size": 0
+  },
+  {
+    "idx": 1,
+    "name": ".interp",
+    "type": "PROGBITS",
+    "addr": 2097720,
+    "off": 568,
+    "size": 28
+  },
+  {
+    "idx": 2,
+    "name": ".note.ABI-tag",
+    "type": "NOTE",
+    "addr": 2097748,
+    "off": 596,
+    "size": 32
+  },
+  {
+    "idx": 3,
+    "name": ".note.gnu.build-id",
+    "type": "NOTE",
+    "addr": 2097780,
+    "off": 628,
+    "size": 36
+  },
+  {
+    "idx": 4,
+    "name": ".dynsym",
+    "type": "DYNSYM",
+    "addr": 2097816,
+    "off": 664,
+    "size": 25824
+  },
+  {
+    "idx": 5,
+    "name": ".gnu.version",
+    "type": "VERSYM",
+    "addr": 2123640,
+    "off": 26488,
+    "size": 2152
+  },
+  {
+    "idx": 6,
+    "name": ".gnu.version_d",
+    "type": "VERDEF",
+    "addr": 2125792,
+    "off": 28640,
+    "size": 56
+  },
+  {
+    "idx": 7,
+    "name": ".gnu.version_r",
+    "type": "VERNEED",
+    "addr": 2125848,
+    "off": 28696,
+    "size": 384
+  },
+  {
+    "idx": 8,
+    "name": ".gnu.hash",
+    "type": "GNU_HASH",
+    "addr": 2126232,
+    "off": 29080,
+    "size": 5492
+  },
+  {
+    "idx": 9,
+    "name": ".hash",
+    "type": "HASH",
+    "addr": 2131724,
+    "off": 34572,
+    "size": 8616
+  },
+  {
+    "idx": 10,
+    "name": ".dynstr",
+    "type": "STRTAB",
+    "addr": 2140340,
+    "off": 43188,
+    "size": 22434
+  },
+  {
+    "idx": 11,
+    "name": ".rela.dyn",
+    "type": "RELA",
+    "addr": 2162776,
+    "off": 65624,
+    "size": 1368
+  },
+  {
+    "idx": 12,
+    "name": ".rela.plt",
+    "type": "RELA",
+    "addr": 2164144,
+    "off": 66992,
+    "size": 9096
+  },
+  {
+    "idx": 13,
+    "name": ".rodata",
+    "type": "PROGBITS",
+    "addr": 2174976,
+    "off": 77824,
+    "size": 19795444
+  },
+  {
+    "idx": 14,
+    "name": ".bun_builtins",
+    "type": "PROGBITS",
+    "addr": 21970432,
+    "off": 19873280,
+    "size": 2614191
+  },
+  {
+    "idx": 15,
+    "name": ".text",
+    "type": "PROGBITS",
+    "addr": 24619008,
+    "off": 22489088,
+    "size": 56841267
+  },
+  {
+    "idx": 16,
+    "name": ".init",
+    "type": "PROGBITS",
+    "addr": 81460276,
+    "off": 79330356,
+    "size": 27
+  },
+  {
+    "idx": 17,
+    "name": ".fini",
+    "type": "PROGBITS",
+    "addr": 81460304,
+    "off": 79330384,
+    "size": 13
+  },
+  {
+    "idx": 18,
+    "name": ".plt",
+    "type": "PROGBITS",
+    "addr": 81460320,
+    "off": 79330400,
+    "size": 6080
+  },
+  {
+    "idx": 19,
+    "name": ".tdata",
+    "type": "PROGBITS",
+    "addr": 81470496,
+    "off": 79336480,
+    "size": 9368
+  },
+  {
+    "idx": 20,
+    "name": ".tbss",
+    "type": "NOBITS",
+    "addr": 81479872,
+    "off": 79345848,
+    "size": 12952
+  },
+  {
+    "idx": 21,
+    "name": ".tm_clone_table",
+    "type": "PROGBITS",
+    "addr": 81479864,
+    "off": 79345848,
+    "size": 0
+  },
+  {
+    "idx": 22,
+    "name": ".data",
+    "type": "PROGBITS",
+    "addr": 81479872,
+    "off": 79345856,
+    "size": 59212
+  },
+  {
+    "idx": 23,
+    "name": ".fini_array",
+    "type": "FINI_ARRAY",
+    "addr": 81539088,
+    "off": 79405072,
+    "size": 16
+  },
+  {
+    "idx": 24,
+    "name": ".init_array",
+    "type": "INIT_ARRAY",
+    "addr": 81539104,
+    "off": 79405088,
+    "size": 80
+  },
+  {
+    "idx": 25,
+    "name": ".data.rel.ro",
+    "type": "PROGBITS",
+    "addr": 81539200,
+    "off": 79405184,
+    "size": 4840
+  },
+  {
+    "idx": 26,
+    "name": ".bun",
+    "type": "PROGBITS",
+    "addr": 83394560,
+    "off": 81260544,
+    "size": 122464755
+  },
+  {
+    "idx": 27,
+    "name": "__DATA,__wtf_config",
+    "type": "PROGBITS",
+    "addr": 81547264,
+    "off": 79413248,
+    "size": 16384
+  },
+  {
+    "idx": 28,
+    "name": "__DATA,__jsc_opcodes",
+    "type": "PROGBITS",
+    "addr": 81563648,
+    "off": 79429632,
+    "size": 16384
+  },
+  {
+    "idx": 29,
+    "name": ".dynamic",
+    "type": "DYNAMIC",
+    "addr": 81580032,
+    "off": 79446016,
+    "size": 496
+  },
+  {
+    "idx": 30,
+    "name": ".got",
+    "type": "PROGBITS",
+    "addr": 81580528,
+    "off": 79446512,
+    "size": 416
+  },
+  {
+    "idx": 31,
+    "name": ".got.plt",
+    "type": "PROGBITS",
+    "addr": 81580944,
+    "off": 79446928,
+    "size": 3056
+  },
+  {
+    "idx": 32,
+    "name": ".bss",
+    "type": "NOBITS",
+    "addr": 81584000,
+    "off": 79449984,
+    "size": 1806760
+  },
+  {
+    "idx": 33,
+    "name": ".comment",
+    "type": "PROGBITS",
+    "addr": 0,
+    "off": 203726848,
+    "size": 361
+  },
+  {
+    "idx": 34,
+    "name": ".note.stapsdt",
+    "type": "NOTE",
+    "addr": 0,
+    "off": 203727212,
+    "size": 232
+  },
+  {
+    "idx": 35,
+    "name": ".symtab",
+    "type": "SYMTAB",
+    "addr": 0,
+    "off": 203727448,
+    "size": 25824
+  },
+  {
+    "idx": 36,
+    "name": ".strtab",
+    "type": "STRTAB",
+    "addr": 0,
+    "off": 203753272,
+    "size": 21430
+  },
+  {
+    "idx": 37,
+    "name": ".shstrtab",
+    "type": "STRTAB",
+    "addr": 0,
+    "off": 203774702,
+    "size": 366
+  }
+]

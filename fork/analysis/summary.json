@@ -1,0 +1,27 @@
+{
+  "binary": "fork/baseline/opencode.bin",
+  "size_bytes": 203777504,
+  "sha256": "a233de331f4438336e604d8e006fdab18e5911c4ece16de8e502eb61394c3586",
+  "sections": 38,
+  "bun_section_bytes": 122464755,
+  "embedded_files": 436,
+  "buckets": {
+    "*.txt|md (Prompt-Preset)": 13,
+    "*.mp3 (Audio)": 5,
+    "chunk-*.js (Bundler-Chunks)": 397,
+    "*.scm (Syntax-Highlighting)": 6,
+    "*.so (Native Libraries)": 3,
+    "sonstige": 2,
+    "*.wasm (Nativ-Module)": 9,
+    "*.node (Natives Addons)": 1
+  },
+  "runtime_flags": [
+    "----",
+    "--no-warnings",
+    "--smol",
+    "--use-system-ca",
+    "--user-agent=opencode/latest/2.0.23/cli"
+  ],
+  "opencode_env_vars": 42,
+  "total_strings": 272304
+}

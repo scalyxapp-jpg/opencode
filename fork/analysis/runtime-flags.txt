@@ -1,0 +1,5 @@
+----
+--no-warnings
+--smol
+--use-system-ca
+--user-agent=opencode/latest/2.0.23/cli

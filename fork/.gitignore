@@ -1,0 +1,8 @@
+# Baseline-Binary ist eine Kopie des Originals, kein Quellcode.
+# 203 MB dürfen nicht in die Historie.
+baseline/*.bin
+
+node_modules/
+
+# Laufzeit-Artefakte von ocf
+*.md.tmp
