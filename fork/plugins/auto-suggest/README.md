@@ -77,21 +77,30 @@ Session wirklich etwas passiert ist (Datei geändert, Befehl ausgeführt oder
 Fehlschlag), und höchstens einmal pro Turn. Sonst käme der Vorschlag aus dem
 Nichts.
 
-### Es steht nie mehr als ein Formular offen
+### Es gibt genau ein Formular — nicht mehrere
 
-Ein unbeantwortetes Formular bleibt serverseitig offen, und die Oberfläche
-zeigt immer das **älteste**. Ohne Aufräumen sammelt sich deshalb eines nach dem
+Ein unbeantwortetes Formular bleibt serverseitig offen, und die Oberfläche zeigt
+immer das **älteste**. Ohne Aufräumen sammelt sich deshalb eines nach dem
 anderen an: `esc` schließt dann zwar eines, aber an seiner Stelle erscheint
 sofort das nächste gleich aussehende — es wirkt, als ließe sich die Auswahl
-überhaupt nicht schließen.
+überhaupt nicht schließen, oder als ginge sie immer wieder von selbst auf.
 
-Dagegen zwei Vorkehrungen:
+Dagegen drei Vorkehrungen:
 
-- Vor jedem neuen Formular werden eigene offene Formulare geschlossen
-  (`reapForms`, erkannt am Feldschlüssel `next`; fremde Formulare bleiben
-  unangetastet).
-- Läuft die Wartezeit von zehn Minuten ab, ohne dass jemand antwortet, wird das
-  Formular abgebrochen (`waitForAnswer`) und bleibt nicht liegen.
+- **Höchstens ein eigenes Formular.** Vor jedem Anlegen wird nachgesehen, ob
+  schon eines offen ist; dann wird **dieses benutzt** statt ein zweites daneben
+  zu legen. Es wird dabei nicht geschlossen und neu erzeugt — das würde bei zwei
+  Plugin-Instanzen zum ständigen Ersetzen führen.
+- **Echte Doppelgänger werden weggeräumt** (`reapForms`, erkannt am Feldschlüssel
+  `next`). Das älteste bleibt stehen, weil die Oberfläche genau das zeigt. Fremde
+  Formulare — etwa Berechtigungsabfragen — bleiben unangetastet.
+- **Zeitablauf räumt selbst weg.** Läuft die Wartezeit von zehn Minuten ab, ohne
+  dass jemand antwortet, wird das Formular abgebrochen (`waitForAnswer`) und
+  bleibt nicht liegen.
+
+Zusammen mit `answeredTurn` (ein Durchlauf wird nur einmal ausgewertet) ergibt
+das: **ein Formular pro abgeschlossenem Turn**, und nach `esc` kommt keines von
+selbst zurück.
 
 ## Woraus die Vorschläge entstehen
 

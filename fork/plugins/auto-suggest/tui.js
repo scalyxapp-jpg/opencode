@@ -20,10 +20,11 @@
  * hat (Ereignis `session.execution.succeeded`, s. openAfterTurn) — aber nur
  * einmal pro Turn und nur, wenn die Belege wirklich etwas hergeben.
  *
- * Es steht nie mehr als ein Formular offen: vor jedem neuen werden eigene
- * offene geschlossen, und bei Zeitablauf raeumt waitForAnswer selbst weg.
- * Sonst sammeln sich Formulare an, und ein Abbruch mit `esc` zeigt sofort das
- * naechste gleich aussehende statt zu schliessen.
+ * Es gibt genau ein Formular pro abgeschlossenem Turn: vor dem Anlegen wird
+ * geprueft, ob schon eines offen ist (dann wird dieses benutzt), Doppelgaenger
+ * werden geschlossen, und bei Zeitablauf raeumt waitForAnswer selbst weg. Sonst
+ * sammeln sich Formulare an, und ein Abbruch mit `esc` zeigt sofort das naechste
+ * gleich aussehende statt zu schliessen.
  */
 
 const EVIDENCE_WINDOW = 40
@@ -454,23 +455,31 @@ async function waitForAnswer(client, sessionID, formID) {
 }
 
 /**
- * Raeumt eigene, noch offene Formulare weg.
+ * Prueft die eigenen offenen Formulare und raeumt Doppelte weg.
  *
  * Ein unbeantwortetes Formular bleibt serverseitig offen — und die Oberflaeche
  * zeigt immer das aelteste. Ohne dieses Aufraeumen sammelt sich eines nach dem
  * anderen an: `esc` schliesst dann zwar eines, aber an seiner Stelle erscheint
  * sofort das naechste gleich aussehende. Das wirkt, als liesse sich die Auswahl
- * ueberhaupt nicht schliessen. Deshalb: hoechstens ein offenes Formular.
+ * ueberhaupt nicht schliessen.
+ *
+ * Ist bereits genau eines offen, wird es zurueckgegeben und NICHT ersetzt:
+ * wuerde jeder Aufruf das vorhandene schliessen und ein neues anlegen, saehe es
+ * bei zwei Plugin-Instanzen aus, als ginge die Auswahl immer wieder von selbst
+ * auf. Nur echte Doppelgaenger fliegen raus.
  */
 async function reapForms(client, sessionID) {
   let pending
   try {
     pending = await client.session.form.list({ sessionID })
   } catch {
-    return
+    return undefined
   }
   const mine = (pending ?? []).filter((form) => (form?.fields ?? []).some((field) => field?.key === FORM_KEY))
-  await Promise.all(mine.map((form) => cancelForm(client, sessionID, form.id)))
+  if (!mine.length) return undefined
+  const [keep, ...duplicates] = mine
+  await Promise.all(duplicates.map((form) => cancelForm(client, sessionID, form.id)))
+  return keep?.id
 }
 
 function cancelForm(client, sessionID, formID) {
@@ -526,9 +535,13 @@ export default {
 
       pending = true
       try {
-        // Vor jedem neuen Formular liegen gebliebene wegraeumen, damit nie zwei
-        // offen stehen und `esc` wirklich schliesst.
-        await reapForms(client, sessionID)
+        // Erst nachsehen, ob schon ein eigenes Formular offen ist. Dann wird es
+        // benutzt statt ein zweites daneben zu legen: genau eines pro Mal.
+        const openForm = await reapForms(client, sessionID)
+        if (openForm) {
+          await submitSelection(sessionID, openForm)
+          return true
+        }
 
         const generated = await client.session.generate({ sessionID, prompt: buildPrompt(evidence, focus) })
 
@@ -560,7 +573,7 @@ export default {
           title,
           fields: [
             {
-              key: "next",
+              key: FORM_KEY,
               type: "multiselect",
               title: "Vorschläge",
               description: "Enter wählt an, Tab und Enter übernehmen alle gewählten",
@@ -581,20 +594,7 @@ export default {
           return false
         }
 
-        const picked = await waitForAnswer(client, sessionID, formID)
-        if (!picked.length) return true
-
-        // Externe Plugins haben keinen Zugriff auf den Composer, deshalb wird die
-        // Auswahl direkt abgeschickt statt nur eingefügt. Mehrere Vorschläge
-        // gehen als eine Anfrage mit Reihenfolge raus: daraus wird ein Turn
-        // statt mehrerer, und der Agent kann die Arbeit selbst aufteilen.
-        const text =
-          picked.length === 1
-            ? picked[0]
-            : `Übernimm diese Vorschläge der Reihe nach:\n${picked
-                .map((item, index) => `${index + 1}. ${item}`)
-                .join("\n")}`
-        await client.session.prompt({ sessionID, text })
+        await submitSelection(sessionID, formID)
         return true
       } catch (cause) {
         toast(String(cause?.message ?? cause), "error")
@@ -602,6 +602,27 @@ export default {
       } finally {
         pending = false
       }
+    }
+
+    /**
+     * Wartet auf die Auswahl und schickt sie ab.
+     *
+     * Externe Plugins haben keinen Zugriff auf den Composer, deshalb wird die
+     * Auswahl direkt abgeschickt statt nur eingefuegt. Mehrere Vorschlaege gehen
+     * als eine Anfrage mit Reihenfolge raus: daraus wird ein Turn statt
+     * mehrerer, und der Agent kann die Arbeit selbst aufteilen.
+     */
+    async function submitSelection(sessionID, formID) {
+      const picked = await waitForAnswer(client, sessionID, formID)
+      if (!picked.length) return
+
+      const text =
+        picked.length === 1
+          ? picked[0]
+          : `Übernimm diese Vorschläge der Reihe nach:\n${picked
+              .map((item, index) => `${index + 1}. ${item}`)
+              .join("\n")}`
+      await client.session.prompt({ sessionID, text })
     }
 
     // Slash-Kommando und Palette-Eintrag.
