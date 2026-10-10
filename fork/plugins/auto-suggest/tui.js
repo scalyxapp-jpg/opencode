@@ -1168,6 +1168,46 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     .join("\n")
 }
 
+// Eigener Weg fuer die Vorschlaege: `session.generate` kennt kein Modell, das
+// Plugin erbte bisher immer das Modell der Session (und damit deren Kontingent).
+// Ueber NVIDIA NIM laeuft die Vorschlagsabfrage auf einem eigenen Modell.
+const NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions"
+const NVIDIA_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+const NVIDIA_TIMEOUT_MS = 120000
+
+/**
+ * Die Vorschlagsabfrage direkt bei NVIDIA holen.
+ *
+ * Gibt `undefined` zurueck, wenn kein Schluessel gesetzt ist oder der Ruf
+ * scheitert — dann greift unveraendert der Weg ueber die Session. Das Modell
+ * gibt zuerst `reasoning_content` aus, deshalb werden die Tokens grosszuegig
+ * gesetzt und nur `message.content` gelesen.
+ */
+async function generateWithNvidia(prompt) {
+  const key = globalThis.process?.env?.NVIDIA_API_KEY
+  if (!key) return undefined
+  try {
+    const response = await fetch(NVIDIA_ENDPOINT, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: NVIDIA_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        max_tokens: 6000,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(NVIDIA_TIMEOUT_MS),
+    })
+    if (!response.ok) return undefined
+    const payload = await response.json()
+    const text = payload?.choices?.[0]?.message?.content
+    return typeof text === "string" && text.trim() ? text : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Wartet auf die Antwort des Formulars.
  *
@@ -1419,11 +1459,13 @@ export default {
         // In langen Sessions scheitert die Anfrage mitunter (etwa ein 502 des
         // Anbieters). Dann darf der Befehl nicht ins Leere laufen: es gibt
         // Vorschlaege aus den Belegen.
-        let generated
-        try {
-          generated = await client.session.generate({ sessionID, prompt: buildPrompt(evidence, focus) })
-        } catch (cause) {
-          toast(`Modell nicht erreichbar (${cause?.message ?? cause}) — Vorschläge aus den Belegen`, "warning")
+        let generated = await generateWithNvidia(buildPrompt(evidence, focus))
+        if (generated === undefined) {
+          try {
+            generated = await client.session.generate({ sessionID, prompt: buildPrompt(evidence, focus) })
+          } catch (cause) {
+            toast(`Modell nicht erreichbar (${cause?.message ?? cause}) — Vorschläge aus den Belegen`, "warning")
+          }
         }
 
         // Zweite, belegbasierte Bremse: das Modell darf sich an der Obergrenze
@@ -1549,23 +1591,25 @@ export default {
         })
         const analysis = analyzeProject(files, keyFiles, signals)
         toast("Wertee das Projekt technisch aus und baue Vorschläge …", "info")
-        let generated
-        try {
-          generated = await client.session.generate({
-            sessionID,
-            prompt: buildProjectPrompt(root, analysis, keyFiles, focus),
-          })
-        } catch (cause) {
-          // Scheitert der erste Versuch am Umfang (der Anbieter antwortet etwa
-          // mit 502), wird kleiner nachgefasst.
-          toast(`Erster Versuch zu groß (${cause?.message ?? cause}) — noch einmal kompakt`, "warning")
+        let generated = await generateWithNvidia(buildProjectPrompt(root, analysis, keyFiles, focus))
+        if (generated === undefined) {
           try {
             generated = await client.session.generate({
               sessionID,
-              prompt: buildProjectPrompt(root, analysis, keyFiles, focus, PROJECT_COMPACT),
+              prompt: buildProjectPrompt(root, analysis, keyFiles, focus),
             })
-          } catch (again) {
-            toast(`Modell nicht erreichbar (${again?.message ?? again}) — Vorschläge aus dem Projekt`, "warning")
+          } catch (cause) {
+            // Scheitert der erste Versuch am Umfang (der Anbieter antwortet etwa
+            // mit 502), wird kleiner nachgefasst.
+            toast(`Erster Versuch zu groß (${cause?.message ?? cause}) — noch einmal kompakt`, "warning")
+            try {
+              generated = await client.session.generate({
+                sessionID,
+                prompt: buildProjectPrompt(root, analysis, keyFiles, focus, PROJECT_COMPACT),
+              })
+            } catch (again) {
+              toast(`Modell nicht erreichbar (${again?.message ?? again}) — Vorschläge aus dem Projekt`, "warning")
+            }
           }
         }
 
