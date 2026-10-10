@@ -33,8 +33,11 @@ die angehakten Vorschläge, `esc` verwirft.
 
 Werden mehrere Vorschläge angehakt, wird **je Auswahl ein eigener Auftrag**
 abgeschickt: der erste startet den Lauf, die weiteren warten in der
-Warteschlange und kommen als eigene Turns dran. So bekommt jeder Vorschlag
-seinen eigenen, sauberen Kontext.
+Warteschlange und kommen als eigene Turns dran. Jeder Auftrag ist als Teil einer
+Reihe gekennzeichnet („Aufgabe 1 von 2 — eigenständig“) und trägt am Ende einen
+Rahmen: nur diese eine Aufgabe bearbeiten, abschließen, die weiteren nicht
+vorab beginnen und nicht vermischen. So versteht der Agent, dass es getrennte
+Arbeiten sind und nicht ein großes Vorhaben.
 
 **Nie die blosse Vorschlagszeile.** Ein Vorschlag ist eine Überschrift, kein
 Auftrag — wer nur ihn in den Chat schreibt, überlässt dem Agenten das Raten. Das
@@ -46,6 +49,15 @@ Verzeichnis, geänderte und gelesene Dateien, Befehle, Fehlschläge, letzte
 Anfragen, Lücken). Fehlt das Feld `prompt`, greift eine Vorlage, die das Ziel
 nennt und zum Nachlesen im Code auffordert — der Zusammenhang kommt trotzdem
 mit.
+
+### Wache gegen unangeforderte Formulare
+
+Weil Vorschläge nur über `/next` kommen dürfen, prüft eine Wache alle zwei
+Sekunden, ob ein Vorschlagsformular **ohne** Anforderungsmarke offen ist
+(`metadata.requested`), und schließt es. Das greift auch dann, wenn im laufenden
+Prozess noch ein Zuhörer aus einer älteren Fassung steckt, der von sich aus
+Formulare anlegt. Ohne offene Formulare kostet die Wache nichts: erst wenn die
+Sitzungsliste ein Formular meldet, wird der Server gefragt.
 
 Der Auftrag wird **direkt abgeschickt**. Externe Plugins bekommen den
 Composer nicht zu sehen (`ui` hat keinen Prompt-Setter), deshalb gibt es keinen

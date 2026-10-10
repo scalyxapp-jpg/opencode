@@ -437,7 +437,7 @@ function parseSuggestions(raw) {
  * einen `prompt` (s. buildPrompt), und hier wird zusaetzlich der belegte
  * Sessionzusammenhang angehaengt — auch dann, wenn kein `prompt` vorliegt.
  */
-function composeTask(evidence, suggestion) {
+function composeTask(evidence, suggestion, batch) {
   const title = String(suggestion?.title ?? "").trim()
   const detail = String(suggestion?.detail ?? "").trim()
   const written = String(suggestion?.prompt ?? "").trim()
@@ -455,8 +455,30 @@ function composeTask(evidence, suggestion) {
         .filter((line) => line !== "")
         .join("\n")
 
-  const head = title ? `${title}\n\n` : ""
-  return `${head}${body}\n\n${taskContext(evidence)}`
+  const separate = (batch?.total ?? 1) > 1
+  const head = [title, separate ? `Aufgabe ${batch.index} von ${batch.total} — eigenständig` : ""]
+    .filter(Boolean)
+    .join("\n")
+  return [head, "", body, "", taskContext(evidence), "", separate ? taskFrame(batch) : ""]
+    .filter((part) => part !== "")
+    .join("\n")
+}
+
+/**
+ * Rahmen fuer eine Reihe von Aufgaben.
+ *
+ * Werden mehrere Vorschlaege gewaehlt, sind das getrennte Arbeiten, nicht eine
+ * grosse: ohne diesen Hinweis behandelt der Agent sie als ein Vorhaben und
+ * vermischt sie. Deshalb steht in jedem Auftrag, der wievielte er ist und dass
+ * die weitere erst danach kommt.
+ */
+function taskFrame(batch) {
+  const next = batch.index < batch.total ? `Danach folgt Aufgabe ${batch.index + 1} von ${batch.total}.` : ""
+  return [
+    `Rahmen: Dies ist eine von ${batch.total} getrennten Aufgaben. Bearbeite ausschließlich diese eine`,
+    "und schließe sie ab, bevor du dich anderem zuwendest. Beginne die weiteren nicht vorab und",
+    `vermische sie nicht mit dieser. ${next}`.trim(),
+  ].join("\n")
 }
 
 /** Der belegte Zusammenhang dieser Session, in kurzer, klarer Form. */
@@ -496,6 +518,16 @@ const FORM_KEY = "next"
 
 /** Kennung des Erzeugers im Formular-Metadatenfeld (s. keepSoleForm). */
 const FORM_OWNER = "autoSuggestOwner"
+
+/**
+ * Marke fuer ein ausdruecklich angefordertes Formular.
+ *
+ * Vorschlaege kommen nur ueber `/next`. Fassungen, die frueher auf Ereignisse
+ * gehoert haben, leben in einem laufenden Prozess weiter und legen weiter
+ * Formulare an; solche Formulare tragen diese Marke nicht und werden von der
+ * Wache (s. sweepUnrequested) wieder geschlossen.
+ */
+const REQUEST_MARK = "requested"
 
 async function waitForAnswer(client, sessionID, formID) {
   const deadline = Date.now() + FORM_TIMEOUT_MS
@@ -646,7 +678,7 @@ export default {
         const created = await client.session.form.create({
           sessionID,
           title,
-          metadata: { [FORM_OWNER]: INSTANCE_ID },
+          metadata: { [FORM_OWNER]: INSTANCE_ID, [REQUEST_MARK]: true },
           fields: [
             {
               key: FORM_KEY,
@@ -715,7 +747,7 @@ export default {
         const suggestion = known.get(title) ?? { title, detail: "", prompt: "" }
         await client.session.prompt({
           sessionID,
-          text: composeTask(evidence, suggestion),
+          text: composeTask(evidence, suggestion, { index: index + 1, total: picked.length }),
           ...(index === 0 ? {} : { delivery: "queue" }),
         })
       }
@@ -766,6 +798,56 @@ export default {
       } catch {
         /* Spur ist freiwillig */
       }
+    }
+
+    /**
+     * Wache gegen Vorschlaege, die niemand angefordert hat.
+     *
+     * Vorschlaege kommen ausschliesslich ueber `/next`. Aeltere Fassungen hoeren
+     * aber weiter auf Ereignisse, solange ihr Prozess laeuft, und legen dabei
+     * Formulare an. Die tragen die Anforderungsmarke nicht und werden deshalb
+     * wieder geschlossen. Damit ist "nie automatisch" auch dann durchgesetzt,
+     * wenn im Prozess noch ein alter Zuhoerer steckt.
+     *
+     * Ohne offene Formulare kostet die Wache nichts: die Sitzungsliste kommt aus
+     * dem lokalen Zustand, erst dann wird der Server gefragt.
+     */
+    const GUARD_MS = 2000
+
+    const sweepUnrequested = async () => {
+      let sessions
+      try {
+        sessions = data.session.form.sessions()
+      } catch {
+        return
+      }
+      await Promise.all(
+        (sessions ?? []).map(async (sessionID) => {
+          let pending
+          try {
+            pending = await client.session.form.list({ sessionID })
+          } catch {
+            return
+          }
+          const unrequested = (pending ?? []).filter(
+            (form) =>
+              (form?.fields ?? []).some((field) => field?.key === FORM_KEY) && form.metadata?.[REQUEST_MARK] !== true,
+          )
+          if (!unrequested.length) return
+          note({ action: "sweep", sessionID, forms: unrequested.length })
+          await Promise.all(unrequested.map((form) => cancelForm(client, sessionID, form.id)))
+        }),
+      )
+    }
+
+    const guard = setInterval(() => {
+      void sweepUnrequested().catch(() => {
+        /* Wache ist freiwillig */
+      })
+    }, GUARD_MS)
+
+    return () => {
+      clearInterval(guard)
     }
   },
 }
