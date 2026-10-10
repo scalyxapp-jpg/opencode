@@ -87,21 +87,29 @@ bestimmt es aus dem gemeinsamen Elternpfad der belegten Dateien.
 
 ## Vier Richtungen statt einem Faden
 
-Das Modell soll **nicht** stumpf den Faden fortsetzen. Jeder Vorschlag trägt
-eine Richtung, die vorn im Detail steht:
+Das Modell soll **nicht** stumpf den Faden fortsetzen. Der Schwerpunkt liegt auf
+dem **Ausbau**; Absicherung ist die Ausnahme. Jeder Vorschlag trägt eine
+Richtung, die vorn im Detail steht — in dieser Rangfolge:
 
-| Richtung     | Bedeutung                               |
-| ------------ | --------------------------------------- |
-| `Fortsetzen` | der begonnene Faden                     |
-| `Absichern`  | Tests, Fehlerfälle, Verifikation        |
-| `Vertiefen`  | Aufräumen, Vereinfachen, Robustheit     |
-| `Erweitern`  | neue Funktion, Anschluss, Ausbauschritt |
+| Richtung     | Bedeutung                                        | Menge        |
+| ------------ | ------------------------------------------------ | ------------ |
+| `Erweitern`  | neue Fähigkeit, neuer Anwendungsfall, Anschluss  | mindestens 2 |
+| `Vertiefen`  | Aufräumen, Vereinfachen, Robustheit, Performance | der Rest     |
+| `Fortsetzen` | der begonnene Faden                              | höchstens 1  |
+| `Absichern`  | Tests, Fehlerfälle, Verifikation                 | höchstens 1  |
 
-Der Auftrag verlangt vier bis fünf Vorschläge und **höchstens zwei
-`Fortsetzen`** — der Rest muss streuen. Erfundene Dateien, Funktionen oder
-Tests sind untersagt: wer eine Datei nennt, muss sie aus den Belegen haben.
-Die Anweisung steht **vor und nach** den Belegen, sonst setzt das Modell den
-Verlauf fort, statt zu antworten.
+Die Reihenfolge im Quelltext (`KINDS`) ist die Vorgabe an das Modell, nicht nur
+eine Anzeige: `Erweitern` steht zuerst, `Absichern` zuletzt. Der Auftrag
+verlangt vier bis fünf Vorschläge und **mindestens zwei `Erweitern`**, die über
+den bisherigen Faden hinausdenken dürfen, solange sie an die Belege anknüpfen.
+`Fortsetzen` und `Absichern` sind je auf einen Vorschlag begrenzt, damit die
+Liste streut statt den Faden zu wiederholen. Die beobachteten Lücken werden
+ausdrücklich als **Kontext, keine Pflichtliste** eingespielt, damit sie nicht
+jeden Vorschlag in Richtung Testarbeit ziehen.
+
+Erfundene Dateien, Funktionen oder Tests sind untersagt: wer eine Datei nennt,
+muss sie aus den Belegen haben. Die Anweisung steht **vor und nach** den
+Belegen, sonst setzt das Modell den Verlauf fort, statt zu antworten.
 
 ## Unterschiede zur Fassung im TUI-Quellbaum
 

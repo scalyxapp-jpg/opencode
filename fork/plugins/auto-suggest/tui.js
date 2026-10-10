@@ -31,8 +31,11 @@ const MANIFEST_HINT =
   /(^|[\\/])(package\.json|Cargo\.toml|pyproject\.toml|requirements\.txt|go\.mod|pom\.xml|build\.gradle(\.kts)?|libs\.versions\.toml|composer\.json|Gemfile|CMakeLists\.txt)$/
 const CODE_HINT = /\.(ts|tsx|js|jsx|mjs|cjs|go|rs|py|rb|java|kt|kts|swift|c|h|cc|cpp|hpp|cs|php|scala|ex|exs|sh)$/i
 
-/** Vier Richtungen. "Fortsetzen" ist die naheliegende, die anderen sind der Mehrwert. */
-const KINDS = ["Fortsetzen", "Absichern", "Vertiefen", "Erweitern"]
+/**
+ * Vier Richtungen, nach Erwartung sortiert: Ausbau zuerst, reine Absicherung zuletzt.
+ * Die Reihenfolge ist eine Vorgabe an das Modell, nicht nur eine Anzeige.
+ */
+const KINDS = ["Erweitern", "Vertiefen", "Fortsetzen", "Absichern"]
 
 const clip = (value, max) => (value.length > max ? value.slice(0, max - 1) + "…" : value)
 
@@ -210,7 +213,7 @@ function buildPrompt(evidence, focus) {
       lines.push(`  - ${failure.tool} auf ${failure.target || "?"}: ${failure.error}`)
   }
   if (evidence.signals.length) {
-    lines.push("Beobachtete Lücken:")
+    lines.push("Beobachtete Lücken (Kontext für Absichern und Vertiefen, keine Pflichtliste):")
     for (const signal of evidence.signals) lines.push(`  - ${signal}`)
   }
   if (evidence.lastClaim) lines.push(`Letzte Aussage, wörtliches Zitat: ${JSON.stringify(evidence.lastClaim)}`)
@@ -218,22 +221,23 @@ function buildPrompt(evidence, focus) {
 
   return [
     "AUFGABE: Schlage vier bis fünf nächste Arbeiten vor, die aus dieser Session folgen.",
-    "Ziel ist nicht, den Faden stumpf fortzusetzen, sondern das Vorhaben voranzubringen:",
-    "weitere Fähigkeiten, Verbesserungen, Erweiterungen und Absicherungen.",
+    "Der Schwerpunkt liegt auf dem Ausbau: neue Fähigkeiten, neue Anwendungsfälle und Ideen,",
+    "die auf dem entstandenen Stand aufbauen. Absicherung ist die Ausnahme, nicht die Regel.",
     "",
     "Jeder Vorschlag bekommt ein `kind` aus genau dieser Liste:",
+    '- "Erweitern" — eine neue Fähigkeit, ein neuer Anwendungsfall oder eine Idee, die fachlich auf dem aufbaut, was hier entsteht.',
+    '- "Vertiefen" — das Bestehende besser machen: Struktur, Lesbarkeit, Performance, Sicherheit, Fehlerbehandlung.',
     '- "Fortsetzen" — der nächste Schritt derselben Arbeit.',
     '- "Absichern" — Test, Regression, Fehlerfall oder Prüfung dessen, was gerade entstand.',
-    '- "Vertiefen" — Qualität des Bestehenden: Struktur, Lesbarkeit, Performance, Sicherheit, Fehlerbehandlung.',
-    '- "Erweitern" — eine Fähigkeit, die fachlich auf dem aufbaut, was hier entsteht.',
     "",
     "Regeln:",
     "1. Jeder Vorschlag muss sich auf einen Punkt der Belege stützen können.",
     "2. Erfinde keine Dateien, Funktionen, Tests oder Probleme. Nennt ein Vorschlag eine Datei, muss sie in den Belegen stehen.",
     "3. Beschreibe das Ziel, nicht die Handgriffe.",
-    '4. Höchstens zwei Vorschläge mit "Fortsetzen". Die übrigen kommen aus den anderen Gruppen, sofern die Belege das tragen.',
-    "5. Wenn die Belege keinen sinnvollen Schritt hergeben, gib ein leeres Array zurück.",
-    focus ? `6. Besonderes Augenmerk: ${focus}` : "",
+    '4. Mindestens zwei Vorschläge sind "Erweitern". Sie dürfen über den bisherigen Faden hinausdenken, solange sie an die Belege anknüpfen.',
+    '5. Höchstens einer ist "Fortsetzen", höchstens einer ist "Absichern". Alles Übrige ist "Vertiefen".',
+    "6. Wenn die Belege keinen sinnvollen Schritt hergeben, gib ein leeres Array zurück.",
+    focus ? `7. Besonderes Augenmerk: ${focus}` : "",
     "",
     "BELEGE (nur diese, keine Annahmen darüber hinaus):",
     lines.join("\n"),
