@@ -118,8 +118,11 @@ Dagegen vier Vorkehrungen:
   daneben zu legen. Es wird dabei nicht geschlossen und neu erzeugt — das würde
   bei mehreren Fenstern zum ständigen Ersetzen führen.
 - **Doppelgänger werden weggeräumt** (`keepSoleForm`, erkannt am Feldschlüssel
-  `next`). Es bleibt das älteste stehen, weil die Oberfläche genau das zeigt.
-  Fremde Formulare — etwa Berechtigungsabfragen — bleiben unangetastet.
+  `next`). Es bleibt das älteste stehen, weil die Oberfläche genau das zeigt und
+  sein Ersteller darauf wartet. Fremde Formulare — etwa Berechtigungsabfragen —
+  bleiben unangetastet. Zusätzlich läuft nach jedem Ereignis verzögert ein
+  Sammelgang (`collectLooseForms`), der auch Formulare einsammelt, die ein
+  Zuhörer aus einer älteren Fassung daneben gelegt hat.
 - **Nur der Ersteller sendet ab.** Jedes Formular trägt in den Metadaten eine
   Besitzerkennung (`autoSuggestOwner`). Mehrere Fenster hören dasselbe Ereignis
   und warten auf dasselbe Formular; ohne diese Kennung ginge dieselbe Auswahl

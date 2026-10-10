@@ -740,7 +740,12 @@ export default {
     /** Oeffnet die Auswahl einmal pro Turn, sobald der Agent fertig geschrieben hat. */
     const openAfterTurn = async (event) => {
       const sessionID = event?.data?.sessionID ?? currentSession()
-      if (!sessionID || pending) return
+      if (!sessionID) return
+
+      // Immer aufraeumen, auch wenn diese Instanz die Runde nicht bekommt.
+      collectLooseForms(sessionID)
+
+      if (pending) return
 
       // Das Ereignis wird beim Commit veroeffentlicht, die Nachrichtenliste des
       // Clients kann einen Wimpernschlag hinterherhinken. Ein verpasster Turn
@@ -774,6 +779,29 @@ export default {
       void openAfterTurn(event).catch(() => {
         /* ask() meldet Fehler selbst */
       })
+    }
+
+    // Doppelte Formulare einsammeln, die andere Zuhoerer angelegt haben.
+    //
+    // Ohne Runden-Sperre legt jede Instanz ihre eigene Runde an — und ein
+    // Zuhoerer aus einer aelteren Fassung kennt die Sperre nicht. Deshalb wird
+    // nach jedem Ereignis verzoegert aufgeraeumt: `keepSoleForm` behaelt das
+    // aelteste Formular und schliesst den Rest. Das aelteste bleibt stehen, weil
+    // genau das die Oberflaeche zeigt und sein Ersteller darauf wartet.
+    const JANITOR_DELAY_MS = 2500
+    const janitors = new Map()
+
+    const collectLooseForms = (sessionID) => {
+      clearTimeout(janitors.get(sessionID))
+      janitors.set(
+        sessionID,
+        setTimeout(() => {
+          janitors.delete(sessionID)
+          void keepSoleForm(client, sessionID, INSTANCE_ID).catch(() => {
+            /* Aufraeumen ist freiwillig */
+          })
+        }, JANITOR_DELAY_MS),
+      )
     }
 
     // `session.idle` bleibt als Rueckfall eingetragen, falls eine Fassung ihn
