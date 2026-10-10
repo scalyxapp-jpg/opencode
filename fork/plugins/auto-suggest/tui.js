@@ -666,7 +666,9 @@ function projectFallback(files, evidence) {
  */
 async function listProjectDirectory(client, root, path) {
   try {
-    const response = await client.file.list({ directory: root, path: path || "." })
+    // Der Ort muss verschachtelt unter `location` stehen: flach uebergeben
+    // ignoriert der Server ihn und faellt auf sein Standardverzeichnis zurueck.
+    const response = await client.file.list({ location: { directory: root }, path: path || "." })
     const entries = Array.isArray(response) ? response : (response?.data ?? [])
     return Array.isArray(entries) ? entries : []
   } catch {
@@ -687,6 +689,7 @@ async function readProjectTree(client, root, onProgress) {
       const dir = batch[index]
       for (const entry of entries) {
         const name = String(entry?.path ?? "")
+          .replace(/\/+$/, "")
           .split("/")
           .pop()
         if (!name) continue
@@ -710,7 +713,7 @@ async function readProjectTree(client, root, onProgress) {
 /** Eine Textdatei lesen; alles, was keine Zeichenkette ergibt, bleibt weg. */
 async function readProjectFile(client, root, path) {
   try {
-    const response = await client.file.read({ directory: root, path })
+    const response = await client.file.read({ location: { directory: root }, path })
     if (typeof response === "string") return response
     const bytes = response?.data ?? response
     if (bytes instanceof Uint8Array) return new TextDecoder().decode(bytes)
