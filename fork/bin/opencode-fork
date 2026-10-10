@@ -86,9 +86,22 @@ HELP
   --standalone)
     shift
     echo "opencode-fork: private Serverinstanz auf Branch $BRANCH$DIRTY"
-    exec bun --cwd packages/cli run src/index.ts --standalone "$@"
+    exec bun run --cwd packages/cli src/index.ts --standalone "$@"
     ;;
 esac
+
+# Erstes Argument als Verzeichnis pruefen, bevor der CLI daran scheitert.
+if [[ -n "${1:-}" && "${1:0:1}" != "-" ]]; then
+  if [[ ! -d "$1" ]]; then
+    echo "opencode-fork: Verzeichnis nicht gefunden: $1" >&2
+    echo "  Ohne Argument startet die TUI im aktuellen Verzeichnis." >&2
+    exit 1
+  fi
+  DIR="$(cd "$1" && pwd)"
+  shift
+  echo "opencode-fork: Branch $BRANCH$DIRTY"
+  exec bun run dev:live "$DIR" "$@"
+fi
 
 echo "opencode-fork: Branch $BRANCH$DIRTY"
 exec bun run dev:live "$@"
