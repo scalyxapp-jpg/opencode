@@ -85,22 +85,28 @@ anderen an: `esc` schließt dann zwar eines, aber an seiner Stelle erscheint
 sofort das nächste gleich aussehende — es wirkt, als ließe sich die Auswahl
 überhaupt nicht schließen, oder als ginge sie immer wieder von selbst auf.
 
-Dagegen drei Vorkehrungen:
+Dagegen vier Vorkehrungen:
 
-- **Höchstens ein eigenes Formular.** Vor jedem Anlegen wird nachgesehen, ob
-  schon eines offen ist; dann wird **dieses benutzt** statt ein zweites daneben
-  zu legen. Es wird dabei nicht geschlossen und neu erzeugt — das würde bei zwei
-  Plugin-Instanzen zum ständigen Ersetzen führen.
-- **Echte Doppelgänger werden weggeräumt** (`reapForms`, erkannt am Feldschlüssel
-  `next`). Das älteste bleibt stehen, weil die Oberfläche genau das zeigt. Fremde
-  Formulare — etwa Berechtigungsabfragen — bleiben unangetastet.
+- **Erst nachsehen, dann anlegen.** Vor jedem Anlegen wird geprüft, ob schon ein
+  Vorschlagsformular offen ist; dann wird **dieses benutzt** statt ein zweites
+  daneben zu legen. Es wird dabei nicht geschlossen und neu erzeugt — das würde
+  bei mehreren Fenstern zum ständigen Ersetzen führen.
+- **Doppelgänger werden weggeräumt** (`keepSoleForm`, erkannt am Feldschlüssel
+  `next`). Es bleibt das älteste stehen, weil die Oberfläche genau das zeigt.
+  Fremde Formulare — etwa Berechtigungsabfragen — bleiben unangetastet.
+- **Nur der Ersteller sendet ab.** Jedes Formular trägt in den Metadaten eine
+  Besitzerkennung (`autoSuggestOwner`). Mehrere Fenster hören dasselbe Ereignis
+  und warten auf dasselbe Formular; ohne diese Kennung ginge dieselbe Auswahl
+  mehrfach raus. Wer nicht der Ersteller ist, wartet trotzdem — damit ein liegen
+  gebliebenes Formular nach der Wartezeit aufgeräumt wird.
 - **Zeitablauf räumt selbst weg.** Läuft die Wartezeit von zehn Minuten ab, ohne
   dass jemand antwortet, wird das Formular abgebrochen (`waitForAnswer`) und
   bleibt nicht liegen.
 
-Zusammen mit `answeredTurn` (ein Durchlauf wird nur einmal ausgewertet) ergibt
-das: **ein Formular pro abgeschlossenem Turn**, und nach `esc` kommt keines von
-selbst zurück.
+Zusammen mit `answeredTurn` (ein Durchlauf wird nur einmal ausgewertet) und dem
+`pending`-Riegel (während ein Formular offen ist, wird keines angelegt) ergibt
+das: **genau ein Formular pro abgeschlossenem Turn**, und nach `esc` kommt keines
+von selbst zurück.
 
 ## Woraus die Vorschläge entstehen
 

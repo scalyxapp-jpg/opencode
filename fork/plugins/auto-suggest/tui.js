@@ -22,9 +22,9 @@
  *
  * Es gibt genau ein Formular pro abgeschlossenem Turn: vor dem Anlegen wird
  * geprueft, ob schon eines offen ist (dann wird dieses benutzt), Doppelgaenger
- * werden geschlossen, und bei Zeitablauf raeumt waitForAnswer selbst weg. Sonst
- * sammeln sich Formulare an, und ein Abbruch mit `esc` zeigt sofort das naechste
- * gleich aussehende statt zu schliessen.
+ * werden geschlossen, nur der Ersteller schickt ab, und bei Zeitablauf raeumt
+ * waitForAnswer selbst weg. Sonst sammeln sich Formulare an, und ein Abbruch mit
+ * `esc` zeigt sofort das naechste gleich aussehende statt zu schliessen.
  */
 
 const EVIDENCE_WINDOW = 40
@@ -432,6 +432,9 @@ const FORM_TIMEOUT_MS = 10 * 60 * 1000
 /** Schluessel des Vorschlagsfeldes: daran werden eigene Formulare erkannt. */
 const FORM_KEY = "next"
 
+/** Kennung des Erzeugers im Formular-Metadatenfeld (s. keepSoleForm). */
+const FORM_OWNER = "autoSuggestOwner"
+
 async function waitForAnswer(client, sessionID, formID) {
   const deadline = Date.now() + FORM_TIMEOUT_MS
   while (Date.now() < deadline) {
@@ -455,7 +458,7 @@ async function waitForAnswer(client, sessionID, formID) {
 }
 
 /**
- * Prueft die eigenen offenen Formulare und raeumt Doppelte weg.
+ * Sorgt dafuer, dass genau ein Vorschlagsformular offen ist.
  *
  * Ein unbeantwortetes Formular bleibt serverseitig offen — und die Oberflaeche
  * zeigt immer das aelteste. Ohne dieses Aufraeumen sammelt sich eines nach dem
@@ -463,23 +466,29 @@ async function waitForAnswer(client, sessionID, formID) {
  * sofort das naechste gleich aussehende. Das wirkt, als liesse sich die Auswahl
  * ueberhaupt nicht schliessen.
  *
- * Ist bereits genau eines offen, wird es zurueckgegeben und NICHT ersetzt:
- * wuerde jeder Aufruf das vorhandene schliessen und ein neues anlegen, saehe es
- * bei zwei Plugin-Instanzen aus, als ginge die Auswahl immer wieder von selbst
- * auf. Nur echte Doppelgaenger fliegen raus.
+ * Liegt schon eines vor, wird es zurueckgegeben und NICHT ersetzt: wuerde jeder
+ * Aufruf das vorhandene schliessen und ein neues anlegen, kaeme die Auswahl nie
+ * zur Ruhe. Doppelgaenger fliegen raus; es bleibt das aelteste, weil genau das
+ * die Oberflaeche zeigt.
+ *
+ * `owned` sagt, ob das verbleibende Formular von diesem Aufrufer stammt. Nur
+ * der Ersteller schickt die Auswahl ab: warten mehrere Fenster auf dasselbe
+ * Formular, wuerde sonst dieselbe Auswahl mehrfach gesendet.
  */
-async function reapForms(client, sessionID) {
+async function keepSoleForm(client, sessionID, owner) {
   let pending
   try {
     pending = await client.session.form.list({ sessionID })
   } catch {
     return undefined
   }
-  const mine = (pending ?? []).filter((form) => (form?.fields ?? []).some((field) => field?.key === FORM_KEY))
-  if (!mine.length) return undefined
-  const [keep, ...duplicates] = mine
+  const forms = (pending ?? [])
+    .filter((form) => (form?.fields ?? []).some((field) => field?.key === FORM_KEY))
+    .sort((left, right) => String(left?.id).localeCompare(String(right?.id)))
+  const [keep, ...duplicates] = forms
+  if (!keep) return undefined
   await Promise.all(duplicates.map((form) => cancelForm(client, sessionID, form.id)))
-  return keep?.id
+  return { id: keep.id, owned: keep.metadata?.[FORM_OWNER] === owner }
 }
 
 function cancelForm(client, sessionID, formID) {
@@ -493,6 +502,10 @@ export default {
     const { client, data, ui, keymap } = context
     let pending = false
     let answeredTurn = ""
+
+    // Kennzeichnet die Formulare dieses Fensters. Mehrere offene Fenster hoeren
+    // dasselbe Ereignis; nur der Erzeuger darf die Auswahl abschicken.
+    const INSTANCE_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 
     const toast = (message, variant) => {
       try {
@@ -535,9 +548,9 @@ export default {
 
       pending = true
       try {
-        // Erst nachsehen, ob schon ein eigenes Formular offen ist. Dann wird es
-        // benutzt statt ein zweites daneben zu legen: genau eines pro Mal.
-        const openForm = await reapForms(client, sessionID)
+        // Erst nachsehen, ob schon ein Formular offen ist. Dann wird es benutzt
+        // statt ein zweites daneben zu legen: genau eines pro Mal.
+        const openForm = await keepSoleForm(client, sessionID, INSTANCE_ID)
         if (openForm) {
           await submitSelection(sessionID, openForm)
           return true
@@ -571,6 +584,7 @@ export default {
         const created = await client.session.form.create({
           sessionID,
           title,
+          metadata: { [FORM_OWNER]: INSTANCE_ID },
           fields: [
             {
               key: FORM_KEY,
@@ -594,7 +608,10 @@ export default {
           return false
         }
 
-        await submitSelection(sessionID, formID)
+        // Hat ein zweites Fenster gleichzeitig angelegt, bleibt genau eines
+        // stehen — und zwar dasselbe in beiden Fenstern (das aelteste).
+        const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true }
+        await submitSelection(sessionID, sole)
         return true
       } catch (cause) {
         toast(String(cause?.message ?? cause), "error")
@@ -607,14 +624,20 @@ export default {
     /**
      * Wartet auf die Auswahl und schickt sie ab.
      *
+     * Abgeschickt wird nur, wenn das Formular von dieser Instanz stammt
+     * (`owned`): mehrere Fenster koennen auf dasselbe Formular warten, und sonst
+     * ginge dieselbe Auswahl mehrfach raus. Wer nicht der Ersteller ist, wartet
+     * trotzdem — damit ein liegen gebliebenes Formular nach der Wartezeit
+     * aufgeraeumt wird.
+     *
      * Externe Plugins haben keinen Zugriff auf den Composer, deshalb wird die
      * Auswahl direkt abgeschickt statt nur eingefuegt. Mehrere Vorschlaege gehen
      * als eine Anfrage mit Reihenfolge raus: daraus wird ein Turn statt
      * mehrerer, und der Agent kann die Arbeit selbst aufteilen.
      */
-    async function submitSelection(sessionID, formID) {
-      const picked = await waitForAnswer(client, sessionID, formID)
-      if (!picked.length) return
+    async function submitSelection(sessionID, form) {
+      const picked = await waitForAnswer(client, sessionID, form.id)
+      if (!picked.length || !form.owned) return
 
       const text =
         picked.length === 1
