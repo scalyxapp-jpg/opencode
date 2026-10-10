@@ -31,11 +31,23 @@ Kein Overlay-Fenster.
 **Bedienung:** `↑↓` wählt, `enter`/`space` hakt an, `tab` und `enter` übernehmen
 die angehakten Vorschläge, `esc` verwirft.
 
-Werden mehrere Vorschläge angehakt, gehen sie als **eine** Anfrage mit
-Reihenfolge raus (`Übernimm diese Vorschläge der Reihe nach: …`); daraus wird ein
-Turn statt mehrerer, und der Agent teilt die Arbeit selbst auf.
+Werden mehrere Vorschläge angehakt, wird **je Auswahl ein eigener Auftrag**
+abgeschickt: der erste startet den Lauf, die weiteren warten in der
+Warteschlange und kommen als eigene Turns dran. So bekommt jeder Vorschlag
+seinen eigenen, sauberen Kontext.
 
-Der gewählte Vorschlag wird **direkt abgeschickt**. Externe Plugins bekommen den
+**Nie die blosse Vorschlagszeile.** Ein Vorschlag ist eine Überschrift, kein
+Auftrag — wer nur ihn in den Chat schreibt, überlässt dem Agenten das Raten. Das
+Modell schreibt deshalb zu jedem Vorschlag ein Feld `prompt` (s. `buildPrompt`):
+mehrere Sätze, für sich verständlich, mit Ziel, betroffenen Dateien und der
+Frage, woran die Fertigstellung zu erkennen ist. `composeTask` hängt zusätzlich
+einen belegten Abschnitt „Zusammenhang aus dieser Session“ an (Arbeitsmodus,
+Verzeichnis, geänderte und gelesene Dateien, Befehle, Fehlschläge, letzte
+Anfragen, Lücken). Fehlt das Feld `prompt`, greift eine Vorlage, die das Ziel
+nennt und zum Nachlesen im Code auffordert — der Zusammenhang kommt trotzdem
+mit.
+
+Der Auftrag wird **direkt abgeschickt**. Externe Plugins bekommen den
 Composer nicht zu sehen (`ui` hat keinen Prompt-Setter), deshalb gibt es keinen
 Weg, ihn nur einzufügen.
 

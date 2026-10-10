@@ -16,6 +16,12 @@
  * Anker in den Belegen (s. suggestionBudget), zwischen MIN_SUGGESTIONS und
  * MAX_SUGGESTIONS. Weniger zu liefern ist ausdrücklich erlaubt; auffüllen nicht.
  *
+ * Was in den Chat geht, ist nie die Vorschlagszeile selbst. Das Modell schreibt
+ * zu jedem Vorschlag einen fertigen Auftrag (`prompt`), und composeTask hängt
+ * den belegten Sessionzusammenhang an — sonst fehlt dem Agenten der halbe
+ * Kontext oder der Auftrag bleibt unklar. Je Auswahl geht ein eigener Auftrag
+ * raus; der erste startet den Lauf, die weiteren warten in der Warteschlange.
+ *
  * Die Vorschläge kommen ausschliesslich auf Anforderung: ueber den Befehl
  * `session.suggest` in der Palette oder die Eingabe `/next`. Es oeffnet sich
  * nichts von selbst — auch nicht, wenn der Agent einen Turn abschliesst. Ein
@@ -269,8 +275,11 @@ function buildPrompt(evidence, focus) {
     "BELEGE (nur diese, keine Annahmen darüber hinaus):",
     lines.join("\n"),
     "",
-    'Antworte jetzt ausschließlich mit einem JSON-Array der Form [{"kind":"…","title":"…","detail":"…"}].',
+    'Antworte jetzt ausschließlich mit einem JSON-Array der Form [{"kind":"…","title":"…","detail":"…","prompt":"…"}].',
     "`kind` ist einer der vier Werte. `title` ist die Arbeit in wenigen Worten, `detail` begründet sie aus den Belegen.",
+    "`prompt` ist der fertige Auftrag, der später wortgleich in den Chat geht — mehrere Sätze, für sich verständlich, ohne Bezug auf dieses Menü.",
+    "Er nennt Ziel und Ergebnis, die betroffenen Dateien aus den Belegen, den nötigen Zusammenhang und woran man erkennt, dass die Arbeit fertig ist.",
+    "Eine bloße Wiederholung des `title` genügt nicht: wer nur den `prompt` liest, muss den Auftrag vollständig verstehen können.",
     "Kein Codezaun, kein Vorwort, keine Wiederholung dieser Anweisung.",
     "Das erste Zeichen deiner Antwort ist [ und das letzte ].",
   ]
@@ -385,7 +394,8 @@ function parseSuggestions(raw) {
             if (!title) return undefined
             const kind = kindOf(item.kind ?? item.lens ?? item.group)
             const detail = String(item.detail ?? item.reason ?? item.why ?? "").trim()
-            return { title: clip(title, 120), detail: withKind(kind, detail) }
+            const prompt = String(item.prompt ?? item.task ?? item.auftrag ?? "").trim()
+            return { title: clip(title, 120), detail: withKind(kind, detail), prompt: clip(prompt, 1200) }
           })
           .filter(Boolean)
         if (items.length) return normalizeSuggestions(items)
@@ -416,6 +426,55 @@ function parseSuggestions(raw) {
   }
 
   return normalizeSuggestions([{ title: clip(text, 120), detail: "" }])
+}
+
+/**
+ * Macht aus einem Vorschlag einen vollstaendigen Auftrag fuer den Chat.
+ *
+ * Die Vorschlagszeile allein ist eine Ueberschrift, kein Auftrag: sie nennt
+ * weder Ziel noch Zusammenhang, und ohne diesen Zusammenhang fehlt dem Agenten
+ * spaeter der halbe Kontext. Deshalb schreibt das Modell zu jedem Vorschlag
+ * einen `prompt` (s. buildPrompt), und hier wird zusaetzlich der belegte
+ * Sessionzusammenhang angehaengt — auch dann, wenn kein `prompt` vorliegt.
+ */
+function composeTask(evidence, suggestion) {
+  const title = String(suggestion?.title ?? "").trim()
+  const detail = String(suggestion?.detail ?? "").trim()
+  const written = String(suggestion?.prompt ?? "").trim()
+
+  const body = written
+    ? written
+    : [
+        `Auftrag: ${title || "der genannte Schritt"}`,
+        detail,
+        "",
+        "Verschaffe dir zuerst den noetigen Zusammenhang: sieh dir die unten genannten Dateien an und lies im Code",
+        "nach, statt zu raten. Setze die Aufgabe dann vollstaendig um — mit den Tests und der Dokumentation,",
+        "die zum Vorhaben gehoeren. Wenn der Auftrag auf einer falschen Annahme beruht, sag das und begruende es.",
+      ]
+        .filter((line) => line !== "")
+        .join("\n")
+
+  const head = title ? `${title}\n\n` : ""
+  return `${head}${body}\n\n${taskContext(evidence)}`
+}
+
+/** Der belegte Zusammenhang dieser Session, in kurzer, klarer Form. */
+function taskContext(evidence) {
+  const lines = ["Zusammenhang aus dieser Session (belegt, nicht geraten):"]
+  lines.push(`- Arbeitsmodus: ${evidence.mode}`)
+  if (evidence.root) lines.push(`- Arbeitsverzeichnis: ${evidence.root}`)
+  if (evidence.edited.length) lines.push(`- Zuletzt geändert: ${evidence.edited.join(", ")}`)
+  if (evidence.readOnly.length) lines.push(`- Nur gelesen: ${evidence.readOnly.join(", ")}`)
+  if (evidence.commands.length) lines.push(`- Ausgeführte Befehle: ${evidence.commands.join(" | ")}`)
+  if (evidence.failures.length) {
+    lines.push("Offene Fehlschläge:")
+    for (const failure of evidence.failures)
+      lines.push(`  - ${failure.tool} auf ${failure.target || "?"}: ${failure.error}`)
+  }
+  if (evidence.asks.length) lines.push(`- Letzte Anfragen des Nutzers: ${evidence.asks.join(" | ")}`)
+  if (evidence.signals.length) lines.push(`- Beobachtete Lücken: ${evidence.signals.join("; ")}`)
+  return lines.join("\n")
 }
 
 /**
@@ -555,7 +614,7 @@ export default {
         // angelegt hat: so kann dieselbe Auswahl nicht zweimal rausgehen.
         const openForm = await keepSoleForm(client, sessionID, INSTANCE_ID)
         if (openForm) {
-          if (openForm.owned) await submitSelection(sessionID, openForm)
+          if (openForm.owned) await submitSelection(sessionID, openForm, undefined, evidence)
           return true
         }
 
@@ -619,7 +678,7 @@ export default {
         // darauf und schickt die Auswahl ab.
         const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true }
         if (!sole.owned) return true
-        await submitSelection(sessionID, sole)
+        await submitSelection(sessionID, sole, suggestions, evidence)
         return true
       } catch (cause) {
         toast(String(cause?.message ?? cause), "error")
@@ -643,17 +702,24 @@ export default {
      * als eine Anfrage mit Reihenfolge raus: daraus wird ein Turn statt
      * mehrerer, und der Agent kann die Arbeit selbst aufteilen.
      */
-    async function submitSelection(sessionID, form) {
+    async function submitSelection(sessionID, form, suggestions, evidence) {
       const picked = await waitForAnswer(client, sessionID, form.id)
       if (!picked.length || !form.owned) return
 
-      const text =
-        picked.length === 1
-          ? picked[0]
-          : `Übernimm diese Vorschläge der Reihe nach:\n${picked
-              .map((item, index) => `${index + 1}. ${item}`)
-              .join("\n")}`
-      await client.session.prompt({ sessionID, text })
+      // Je ausgewaehltem Vorschlag ein eigener, vollstaendiger Auftrag: nie die
+      // blosse Vorschlagszeile, sondern Ziel plus belegter Zusammenhang. Der
+      // erste Auftrag startet den Lauf, die weiteren warten in der
+      // Warteschlange und kommen als eigene Turns dran.
+      const known = new Map((suggestions ?? []).map((suggestion) => [suggestion.title, suggestion]))
+      for (const [index, title] of picked.entries()) {
+        const suggestion = known.get(title) ?? { title, detail: "", prompt: "" }
+        await client.session.prompt({
+          sessionID,
+          text: composeTask(evidence, suggestion),
+          ...(index === 0 ? {} : { delivery: "queue" }),
+        })
+      }
+      note({ action: "submitted", sessionID, count: picked.length })
     }
 
     // Slash-Kommando und Palette-Eintrag.
