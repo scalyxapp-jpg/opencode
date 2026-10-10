@@ -1286,8 +1286,22 @@ export default {
       return { evidence, grounded }
     }
 
-    /** Das Projektverzeichnis dieser Session, so genau wie die API es hergibt. */
-    const sessionDirectory = (sessionID) => {
+    /**
+     * Das Projektverzeichnis dieser Session.
+     *
+     * Zuerst die Session selbst: nur sie weiss, in welchem Verzeichnis sie
+     * laeuft. Die lokalen Werte sind nur Rueckfall — sie zeigen sonst auf das
+     * Verzeichnis, aus dem opencode gestartet wurde.
+     */
+    const sessionDirectory = async (sessionID) => {
+      try {
+        const response = await client.session.get({ sessionID })
+        const info = response?.data ?? response
+        const directory = info?.location?.directory ?? info?.directory
+        if (directory) return directory
+      } catch {
+        /* naechste Quelle */
+      }
       try {
         const info = data.session.get?.(sessionID)
         const directory = info?.location?.directory ?? info?.directory
@@ -1476,7 +1490,7 @@ export default {
     async function askProject(sessionID, focus) {
       if (pending || !sessionID) return false
 
-      const root = sessionDirectory(sessionID)
+      const root = await sessionDirectory(sessionID)
       if (!root) {
         toast("Kein Projektverzeichnis gefunden", "warning")
         return false
