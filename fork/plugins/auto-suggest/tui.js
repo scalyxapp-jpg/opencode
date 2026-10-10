@@ -580,6 +580,56 @@ const PROJECT_KEY_FILE =
   /(^|\/)(readme[^/]*|agents\.md|contributing[^/]*|changelog[^/]*|package\.json|pyproject\.toml|cargo\.toml|go\.mod|pom\.xml|build\.gradle(\.kts)?|composer\.json|gemfile|dockerfile|makefile|justfile|tsconfig\.json)$/i
 const PROJECT_LIMITS = { directories: 160, files: 500, keyFiles: 10, keyChars: 1800, treeChars: 14000, depth: 8 }
 
+// Wenn der erste Versuch am Umfang scheitert (der Anbieter antwortet etwa mit
+// 502), wird er mit diesem kleineren Umfang wiederholt: ein groeberer Ueberblick
+// ist besser als keiner.
+const PROJECT_COMPACT = { ...PROJECT_LIMITS, keyFiles: 4, keyChars: 700, treeChars: 4000 }
+
+/**
+ * Vorschlaege allein aus dem Projektbaum.
+ *
+ * Greift, wenn das Modell nicht erreichbar ist. Anders als fallbackSuggestions
+ * sieht das hier nicht die Session, sondern das Projekt: es benennt, was in der
+ * Ablage offensichtlich fehlt.
+ */
+function projectFallback(files, evidence) {
+  const has = (pattern) => files.some((path) => pattern.test(path))
+  const list = []
+  const add = (kind, title, detail) => {
+    if (list.length >= suggestionBudget(evidence)) return
+    list.push({ title, detail: withKind(kind, detail), prompt: "" })
+  }
+
+  if (!has(/(^|\/)(test|tests|spec|specs|__tests__)\//i) && !has(/\.(test|spec)\.[a-z]+$/i))
+    add("Absichern", "Tests für das Projekt anlegen", "Im Baum ist keine Testdatei und kein Testverzeichnis zu sehen.")
+  if (!has(/(^|\/)readme/i))
+    add(
+      "Vertiefen",
+      "README ergänzen",
+      "Im Baum liegt keine README: Zweck, Aufbau und Start des Projekts fehlen damit.",
+    )
+  if (!has(/(^|\/)\.github\/workflows\//i))
+    add("Absichern", "Automatische Prüfung einrichten", "Im Baum ist keine CI-Konfiguration zu sehen.")
+  if (!has(/(^|\/)(agents\.md|contributing[^/]*)$/i))
+    add(
+      "Vertiefen",
+      "Beitrags- und Arbeitsregeln festhalten",
+      "Es gibt keine Datei mit Regeln für die Mitarbeit (AGENTS.md oder CONTRIBUTING).",
+    )
+  if (!has(/(^|\/)(dockerfile|compose\.ya?ml)$/i) && has(/(^|\/)package\.json$/i))
+    add(
+      "Erweitern",
+      "Projekt reproduzierbar startbar machen",
+      "Neben package.json fehlt eine Container- oder Compose-Definition.",
+    )
+
+  for (const suggestion of fallbackSuggestions(evidence)) {
+    if (list.length >= suggestionBudget(evidence)) break
+    list.push(suggestion)
+  }
+  return list
+}
+
 /**
  * Ein Verzeichnis lesen. Fehler sind hier normal (Rechte, Wettlauf) und werden
  * als leer behandelt: der Ueberblick soll auch mit Luecken entstehen.
@@ -684,8 +734,8 @@ function objectSlice(text) {
   return start !== -1 && end > start ? text.slice(start, end + 1) : ""
 }
 
-function buildProjectPrompt(root, files, keyFiles, focus) {
-  const budget = PROJECT_LIMITS.keyFiles
+function buildProjectPrompt(root, files, keyFiles, focus, limits) {
+  const size = limits ?? PROJECT_LIMITS
   return [
     "AUFGABE: Verschaffe dir einen Überblick über dieses Projekt und schlage danach die nächsten Arbeiten vor.",
     'Antworte ausschließlich mit einem JSON-Objekt der Form {"summary":"…","suggestions":[…]}, ohne Codezaun, ohne Vorwort.',
@@ -701,9 +751,9 @@ function buildProjectPrompt(root, files, keyFiles, focus) {
     "",
     `PROJEKTVERZEICHNIS: ${root}`,
     `DATEIEN IM BAUM (${files.length}, gekürzt):`,
-    clip(files.join("\n"), PROJECT_LIMITS.treeChars),
+    clip(files.join("\n"), size.treeChars),
     "",
-    `SCHLÜSSELDATEIEN (${keyFiles.length} von höchstens ${budget}, gekürzt):`,
+    `SCHLÜSSELDATEIEN (${keyFiles.length} von höchstens ${size.keyFiles}, gekürzt):`,
     keyFiles.join("\n\n") || "(keine lesbare Schlüsseldatei gefunden)",
     "",
     "Das erste Zeichen deiner Antwort ist { und das letzte }.",
@@ -1078,11 +1128,21 @@ export default {
             prompt: buildProjectPrompt(root, files, keyFiles, focus),
           })
         } catch (cause) {
-          toast(`Modell nicht erreichbar (${cause?.message ?? cause}) — Vorschläge aus den Belegen`, "warning")
+          // Scheitert der erste Versuch am Umfang (der Anbieter antwortet etwa
+          // mit 502), wird kleiner nachgefasst.
+          toast(`Erster Versuch zu groß (${cause?.message ?? cause}) — noch einmal kompakt`, "warning")
+          try {
+            generated = await client.session.generate({
+              sessionID,
+              prompt: buildProjectPrompt(root, files, keyFiles, focus, PROJECT_COMPACT),
+            })
+          } catch (again) {
+            toast(`Modell nicht erreichbar (${again?.message ?? again}) — Vorschläge aus dem Projekt`, "warning")
+          }
         }
 
         const report = generated ? parseProjectReport(generated?.text ?? generated) : { summary: "", suggestions: [] }
-        const suggestions = (report.suggestions.length ? report.suggestions : fallbackSuggestions(evidence)).slice(
+        const suggestions = (report.suggestions.length ? report.suggestions : projectFallback(files, evidence)).slice(
           0,
           MAX_SUGGESTIONS,
         )
