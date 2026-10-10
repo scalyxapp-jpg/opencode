@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, Match, Show, Switch } from "solid-js"
-import { contextUsage, formatContextUsage } from "../../util/session"
+import { contextPressure, formatContextPressure } from "../../util/session"
 import { useTerminalDimensions } from "@opentui/solid"
 import { stringWidth } from "../../util/string-width"
 
@@ -31,20 +31,28 @@ export function PromptFooter(props: {
       .filter((shell) => shell.metadata.sessionID === props.sessionID).length
     return count ? `${count} shell${count === 1 ? "" : "s"}` : undefined
   })
-  const status = createMemo(() => {
-    if (!props.sessionID) return []
+  const pressure = createMemo(() => {
+    if (!props.sessionID) return
     const session = props.context.data.session.get(props.sessionID)
-    if (!session) return []
-    const usage = contextUsage(
+    if (!session) return
+    return contextPressure(
       props.context.data.session.message.list(props.sessionID),
       props.context.data.location.model.list(session.location),
       session.revert?.messageID,
     )
-    const cost = props.context.data.session.cost(props.sessionID)
-    return [
-      usage ? formatContextUsage(usage.tokens, usage.percent) : undefined,
-      cost > 0 ? money.format(cost) : undefined,
-    ].filter((item): item is string => Boolean(item))
+  })
+  const cost = createMemo(() => (props.sessionID ? props.context.data.session.cost(props.sessionID) : 0))
+  const costLabel = createMemo(() => (cost() > 0 ? money.format(cost()) : undefined))
+  const usage = createMemo(() => {
+    const current = pressure()
+    return current ? formatContextPressure(current) : undefined
+  })
+  const status = createMemo(() => [usage(), costLabel()].filter((item): item is string => Boolean(item)))
+  const pressureColor = createMemo(() => {
+    const level = pressure()?.level
+    if (level === "error") return props.context.theme.text.feedback.error.base
+    if (level === "warning") return props.context.theme.text.feedback.warning.base
+    return props.context.theme.text.muted
   })
   const live = createMemo(() => Boolean(subagents() || shells()))
   const shortcut = (id: string) => props.context.keymap.shortcuts(id)[0]
@@ -87,7 +95,9 @@ export function PromptFooter(props: {
               <Show when={props.showDetails && layout().usage && status().length > 0}>
                 <text fg={props.context.theme.text.muted} wrapMode="none" flexShrink={0}>
                   <Show when={live()}> · </Show>
-                  {status().join(" · ")}
+                  <Show when={usage()}>{(value) => <span style={{ fg: pressureColor() }}>{value()}</span>}</Show>
+                  <Show when={Boolean(usage() && costLabel())}> · </Show>
+                  <Show when={costLabel()}>{(value) => <>{value()}</>}</Show>
                 </text>
               </Show>
             </box>

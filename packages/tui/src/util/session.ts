@@ -76,3 +76,59 @@ export function formatContextUsage(tokens: number, percent?: number) {
   const value = Locale.number(tokens)
   return percent === undefined ? value : `${value} (${percent}%)`
 }
+
+export type ContextLevel = "ok" | "warning" | "error"
+
+/**
+ * Ab wie viel Kontextverbrauch die Anzeige warnen soll. Der Sprung auf `error`
+ * liegt deutlich über `warning`, damit ein einzelner großer Turn nicht sofort
+ * den roten Zustand auslöst.
+ */
+const WARNING_PERCENT = 70
+const ERROR_PERCENT = 90
+
+/**
+ * Context usage plus Druckstufe. `remaining` ist die handlungsleitende Größe —
+ * Prozent allein sagt nicht, wie viele Turns noch Platz haben.
+ */
+export function contextPressure(
+  messages: ReadonlyArray<SessionMessageInfo>,
+  models: ReadonlyArray<ModelInfo> | undefined,
+  boundary?: string,
+) {
+  const usage = contextUsage(messages, models, boundary)
+  if (!usage) return
+  const last = lastAssistantWithUsage(messages, boundary)
+  const model = last
+    ? models?.find((item) => item.providerID === last.model.providerID && item.id === last.model.id)
+    : undefined
+  const limit = model?.limit.context
+  const level: ContextLevel =
+    usage.percent === undefined || usage.percent >= ERROR_PERCENT
+      ? usage.percent === undefined
+        ? "ok"
+        : "error"
+      : usage.percent >= WARNING_PERCENT
+        ? "warning"
+        : "ok"
+  return {
+    tokens: usage.tokens,
+    percent: usage.percent,
+    limit,
+    remaining: limit === undefined ? undefined : Math.max(0, limit - usage.tokens),
+    level,
+  }
+}
+
+/**
+ * Tokenformat für die Fußzeile. Solange kein Druck herrscht, bleibt die Zeile so
+ * kurz wie vorher — das Platzbudget im Footer ist knapp und der Kürzel-Hinweis
+ * darf nicht verdrängt werden. Erst ab der Warnstufe kommt das handlungsleitende
+ * Restbudget dazu; die Warnfarbe trägt die Dringlichkeit.
+ */
+export function formatContextPressure(pressure: NonNullable<ReturnType<typeof contextPressure>>) {
+  const tokens = Locale.number(pressure.tokens)
+  const plain = pressure.percent === undefined ? tokens : `${tokens} (${pressure.percent}%)`
+  if (pressure.level === "ok" || pressure.remaining === undefined) return plain
+  return `${pressure.percent}% · ${Locale.number(pressure.remaining)} free`
+}

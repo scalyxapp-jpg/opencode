@@ -109,12 +109,7 @@ test("prompt footer can hide details", async () => {
   const app = await testRender(
     () => (
       <box width="100%" flexDirection="row" justifyContent="space-between" gap={2}>
-        <PromptFooter
-          context={context}
-          sessionID={sessionID()}
-          mode="normal"
-          showDetails={showDetails()}
-        />
+        <PromptFooter context={context} sessionID={sessionID()} mode="normal" showDetails={showDetails()} />
       </box>
     ),
     {
@@ -138,6 +133,102 @@ test("prompt footer can hide details", async () => {
     setSessionID(undefined)
     await app.renderOnce()
     expect(app.captureCharFrame()).not.toContain("shift+tab agents")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+/**
+ * Der Kontextverbrauch wechselt ab 70 % auf Warn- und ab 90 % auf Fehlerfarbe.
+ * Der Test fährt dieselbe Session durch alle drei Stufen und liest die
+ * tatsächlich gerenderte Vordergrundfarbe aus, nicht nur den Text.
+ */
+test("prompt footer escalates context pressure color", async () => {
+  const muted = RGBA.fromInts(100, 100, 100)
+  const warning = RGBA.fromInts(200, 180, 40)
+  const error = RGBA.fromInts(220, 60, 60)
+  const [tokens, setTokens] = createSignal(1_000)
+
+  const context = {
+    location: { directory: "/workspace" },
+    theme: {
+      text: {
+        base: RGBA.fromInts(200, 200, 200),
+        muted,
+        feedback: {
+          error: { base: error, muted: error },
+          warning: { base: warning, muted: warning },
+        },
+      },
+    },
+    keymap: { shortcuts: () => [] },
+    data: {
+      session: {
+        family: () => ["session"],
+        status: () => "idle",
+        get: () => ({ id: "session", location: { directory: "/workspace" } }),
+        cost: () => 0,
+        message: {
+          list: () => [
+            {
+              id: "message",
+              type: "assistant",
+              model: { providerID: "provider", id: "model" },
+              tokens: {
+                input: tokens(),
+                output: 0,
+                reasoning: 0,
+                cache: { read: 0, write: 0 },
+              },
+            },
+          ],
+        },
+      },
+      shell: { list: () => [] },
+      location: { model: { list: () => [{ providerID: "provider", id: "model", limit: { context: 10_000 } }] } },
+    },
+  } as unknown as Context
+
+  const app = await testRender(
+    () => <PromptFooter context={context} sessionID="session" mode="normal" showDetails={true} />,
+    { width: 80, height: 1 },
+  )
+
+  // Der usage-Text ist ein <span> im Textbaum des äußeren <text>-Renderable.
+  // Opentui bietet dafür keinen öffentlichen Getter, daher der Zugriff auf das
+  // interne _fg. Der Span wird über seinen eindeutigen Klassen-Namen gefunden.
+  const usageColor = async () => {
+    await app.renderOnce()
+    const texts: TextRenderable[] = []
+    const collect = (node: { getChildren?: () => unknown[] }) => {
+      if (node instanceof TextRenderable) texts.push(node)
+      for (const child of node.getChildren?.() ?? []) collect(child as { getChildren?: () => unknown[] })
+    }
+    collect(app.renderer.root as unknown as { getChildren?: () => unknown[] })
+
+    const findSpan = (node: unknown): { _fg?: { toInts(): number[] } } | undefined => {
+      if (!node) return undefined
+      const typed = node as { constructor?: { name?: string }; _fg?: { toInts(): number[] }; children?: unknown[] }
+      if (String(typed.constructor?.name ?? "").includes("Span")) return typed
+      for (const child of typed.children ?? []) {
+        const hit = findSpan(child)
+        if (hit) return hit
+      }
+      return undefined
+    }
+
+    const root = texts[0] as unknown as { rootTextNode?: unknown }
+    return findSpan(root.rootTextNode)?._fg?.toInts()
+  }
+
+  try {
+    expect(await usageColor()).toEqual(muted.toInts())
+
+    setTokens(7_000)
+    expect(await usageColor()).toEqual(warning.toInts())
+
+    setTokens(9_500)
+    expect(await usageColor()).toEqual(error.toInts())
   } finally {
     app.renderer.destroy()
   }
