@@ -841,7 +841,96 @@ function manifestScripts(keyFiles) {
  * werden hier deterministisch bestimmt und mitgeschickt. Das macht die
  * Vorschlaege belastbar und den Auftrag kleiner.
  */
-function analyzeProject(files, keyFiles) {
+const FEATURE_HINT =
+  /(^|\/)(features?|components?|pages?|views?|screens?|routes?|routers?|handlers?|services?|commands?|plugins?|extensions?|modules?|widgets?|api|ui|desktop|app|core|session)\//i
+const FEATURE_LIMITS = { files: 48, chars: 6000, symbols: 8, routes: 6, text: 9000 }
+
+/**
+ * Die gebauten Merkmale aus den Quellen ableiten — grob, aber belegt.
+ *
+ * Aus jeder aussagekraeftigen Datei werden nur Signale gezogen: Kopfkommentar,
+ * oeffentliche Namen und erkennbare Routen. Damit sieht das Modell, was schon
+ * gebaut ist und an welchen Baustein es anknuepfen kann, ohne dass ganze
+ * Dateien in den Auftrag wandern.
+ */
+async function readFeatureSignals(client, root, files, onProgress) {
+  const candidates = files
+    .filter((path) => FEATURE_HINT.test(path))
+    .filter((path) => !/(^|\/)(test|tests|spec|specs|__tests__)\//i.test(path) && !/\.(test|spec)\./i.test(path))
+    .filter((path) => !/(^|\/)(package\.json|tsconfig[^/]*\.json|.*\.d\.ts|index\.(js|ts))$/i.test(path))
+    .sort((left, right) => left.split("/").length - right.split("/").length || left.localeCompare(right))
+    .slice(0, FEATURE_LIMITS.files)
+
+  const signals = []
+  for (const [index, path] of candidates.entries()) {
+    const text = await readProjectFile(client, root, path)
+    const signal = extractSignal(path, text)
+    if (signal) signals.push(signal)
+    onProgress?.(index + 1, candidates.length)
+  }
+  return signals
+}
+
+function extractSignal(path, text) {
+  const source = String(text ?? "").slice(0, FEATURE_LIMITS.chars)
+  if (!source.trim()) return undefined
+
+  const doc = clip(
+    (/^\s*(\/\*\*?([\s\S]*?)\*\/)/.exec(source)?.[2] ?? /^\s*("""([\s\S]*?)""")/.exec(source)?.[2] ?? "")
+      .split("\n")
+      .map((line) => line.replace(/^\s*[*/#]+\s?/, "").trim())
+      .filter(Boolean)
+      .slice(0, 2)
+      .join(" "),
+    170,
+  )
+
+  const symbols = [
+    ...new Set(
+      [...source.matchAll(/\bexport\s+(?:async\s+)?(?:const|function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/g)]
+        .map((match) => match[1])
+        .concat(
+          [...source.matchAll(/^\s*(?:pub\s+)?(?:def|fn|func|class)\s+([A-Za-z_][\w]*)/gm)].map((match) => match[1]),
+        ),
+    ),
+  ].slice(0, FEATURE_LIMITS.symbols)
+
+  const routes = [
+    ...new Set(
+      [...source.matchAll(/["'`](\/(?:api|v\d)?\/?[a-z0-9:[\]_-]+(?:\/[a-z0-9:[\]_.-]+)*)["'`]/gi)].map(
+        (match) => match[1],
+      ),
+    ),
+  ]
+    .filter((route) => route.length > 1 && route.length < 60)
+    .slice(0, FEATURE_LIMITS.routes)
+
+  if (!doc && !symbols.length && !routes.length) return undefined
+  return { path, doc, symbols, routes }
+}
+
+function featureText(signals) {
+  if (!signals.length) return ""
+  return [
+    "GEBAUTE MERKMALE (aus Dateinamen, Kopfkommentaren, öffentlichen Namen und Routen abgeleitet):",
+    clip(
+      signals
+        .map((signal) =>
+          [
+            `· ${signal.path}${signal.doc ? ` — ${signal.doc}` : ""}`,
+            signal.symbols.length ? `  öffentlich: ${signal.symbols.join(", ")}` : "",
+            signal.routes.length ? `  Pfade: ${signal.routes.join(", ")}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        )
+        .join("\n"),
+      FEATURE_LIMITS.text,
+    ),
+  ].join("\n")
+}
+
+function analyzeProject(files, keyFiles, signals) {
   const has = (pattern) => files.some((path) => pattern.test(path))
 
   const stack = STACK_MARKERS.filter((marker) => has(marker.test)).map((marker) => marker.name)
@@ -881,6 +970,7 @@ function analyzeProject(files, keyFiles) {
       : "- Erkannte Bereiche: keine",
     ...areas.map((area) => `  · ${area.label}: ${area.samples.join(", ")}`),
     `- Lesbare Textdateien insgesamt: ${files.length}`,
+    featureText(signals ?? []),
   ]
     .filter((line) => line !== "")
     .join("\n")
@@ -1009,6 +1099,7 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     "`prompt` ist der fertige Auftrag, der später wortgleich in den Chat geht: mehrere Sätze, für sich verständlich, mit Ziel, betroffenen Dateien und woran die Fertigstellung zu erkennen ist.",
     "Stütze dich ausschließlich auf das, was unten steht; erfinde keine Dateien und keine Probleme. Nenne eine Datei nur, wenn sie im Baum vorkommt.",
     "Die technische Einordnung ist abgeleitet, nicht geraten — baue deine Vorschläge darauf auf: nenne den Stand, den du dort findest, und knüpfe an das an, was schon gebaut ist.",
+    "Die Liste der gebauten Merkmale zeigt bestehende Bausteine mit ihren öffentlichen Namen. Jeder Vorschlag soll den Baustein benennen, an den er anknüpft — notfalls über den Pfad.",
     "Was in der Einordnung als fehlend steht, ist ein belegter Anknüpfungspunkt, aber nicht automatisch ein Vorschlag.",
     "Wenn das Projekt zu wenig hergibt, liefere weniger Vorschläge statt geratener.",
     focus ? `Besonderes Augenmerk: ${focus}` : "",
@@ -1386,7 +1477,11 @@ export default {
           toast(`Schlüsseldateien ${done}/${total}`, "info")
         })
 
-        const analysis = analyzeProject(files, keyFiles)
+        const signals = await readFeatureSignals(client, root, files, (done, total) => {
+          if (done % 8 !== 0 && done !== total) return
+          toast(`Merkmale aus den Quellen lesen … ${done}/${total}`, "info")
+        })
+        const analysis = analyzeProject(files, keyFiles, signals)
         toast("Wertee das Projekt technisch aus und baue Vorschläge …", "info")
         let generated
         try {
