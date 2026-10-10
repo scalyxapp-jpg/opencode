@@ -395,7 +395,15 @@ function parseSuggestions(raw) {
             const kind = kindOf(item.kind ?? item.lens ?? item.group)
             const detail = String(item.detail ?? item.reason ?? item.why ?? "").trim()
             const prompt = String(item.prompt ?? item.task ?? item.auftrag ?? "").trim()
-            return { title: clip(title, 120), detail: withKind(kind, detail), prompt: clip(prompt, 1200) }
+            const area = String(item.area ?? item.bereich ?? "")
+              .trim()
+              .toLowerCase()
+            return {
+              title: clip(title, 120),
+              detail: withKind(kind, detail),
+              prompt: clip(prompt, 1200),
+              ...(area ? { area } : {}),
+            }
           })
           .filter(Boolean)
         if (items.length) return normalizeSuggestions(items)
@@ -859,6 +867,7 @@ function analyzeProject(files, keyFiles) {
   const missing = [...new Set(PROJECT_REQUIRED.filter((marker) => !has(marker.test)).map((marker) => marker.label))]
   const scripts = manifestScripts(keyFiles)
 
+  const areas = detectAreas(files)
   const text = [
     "TECHNISCHE EINORDNUNG (aus der Ablage abgeleitet, nicht geraten):",
     `- Ökosystem und Werkzeuge: ${stack.join(", ") || "keine typischen Manifeste gefunden"}`,
@@ -867,12 +876,118 @@ function analyzeProject(files, keyFiles) {
     `- Bereits vorhanden: ${built.join(", ") || "nichts davon erkannt"}`,
     `- Fehlt offensichtlich: ${missing.join(", ") || "nichts davon erkannt"}`,
     scripts ? `- Skripte laut Manifest: ${scripts}` : "",
+    areas.length
+      ? `- Erkannte Bereiche: ${areas.map((area) => `${area.label}${area.mandatory ? " (Pflichtvorschlag)" : ""}`).join(", ")}`
+      : "- Erkannte Bereiche: keine",
+    ...areas.map((area) => `  · ${area.label}: ${area.samples.join(", ")}`),
     `- Lesbare Textdateien insgesamt: ${files.length}`,
   ]
     .filter((line) => line !== "")
     .join("\n")
 
-  return { text, missing, built, stack, files, count: files.length }
+  return { text, missing, built, stack, areas, files, count: files.length }
+}
+
+/**
+ * Bereiche, die im Projekt erkannt werden koennen. `mandatory` heißt: gibt es
+ * den Bereich, gehoert genau ein Vorschlag dazu — auch dann, wenn das Modell
+ * keinen liefert (s. ensureAreaSuggestions).
+ */
+const PROJECT_AREAS = [
+  {
+    key: "gui",
+    label: "Oberfläche (GUI)",
+    mandatory: true,
+    test: /\.(tsx|jsx|vue|svelte|qml)$|(^|\/)(components?|pages?|views?|screens?|ui|widgets?|desktop|app)\//i,
+  },
+  {
+    key: "architecture",
+    label: "Architektur",
+    mandatory: true,
+    test: /(^|\/)(packages|apps|libs|modules|crates|services|core|shared|platform)\//i,
+  },
+  {
+    key: "api",
+    label: "API und Server",
+    test: /(^|\/)(routes?|router|api|handlers?|endpoints?|controllers?|server)\//i,
+  },
+  { key: "cli", label: "Kommandozeile", test: /(^|\/)(cli|bin|commands?)\//i },
+  { key: "data", label: "Daten und Schema", test: /(^|\/)(migrations?|schema|models?|entities|database|db)\b/i },
+  { key: "plugins", label: "Erweiterungen", test: /(^|\/)(plugins?|extensions?|addons?)\//i },
+  { key: "tests", label: "Tests", test: /(^|\/)(test|tests|spec|specs|__tests__)\//i },
+  { key: "docs", label: "Dokumentation", test: /(^|\/)(docs?|documentation)\//i },
+  { key: "ci", label: "Automatisierung", test: /(^|\/)\.github\/workflows\//i },
+  { key: "i18n", label: "Übersetzungen", test: /(^|\/)(i18n|locales?|translations?)\//i },
+  { key: "mobile", label: "Mobile", test: /(^|\/)android\//i },
+  { key: "desktop", label: "Desktop", test: /(^|\/)(electron|tauri|desktop)\//i },
+  { key: "game", label: "Spiel", test: /(^|\/)(scenes?|levels?)\/|\.tscn$/i },
+]
+
+/** Was ein Pflichtbereich vorschlaegt, wenn das Modell ihn auslaesst. */
+const AREA_TEMPLATES = {
+  gui: {
+    kind: "Erweitern",
+    title: "Oberfläche um einen Bedienweg erweitern",
+    lead: "Die Oberfläche besteht aus",
+    tail: "Eine neue Ansicht oder ein neuer Bedienweg baut darauf auf.",
+  },
+  architecture: {
+    kind: "Erweitern",
+    title: "Architektur um einen Baustein erweitern",
+    lead: "Die Struktur des Projekts zeigt",
+    tail: "Ein neuer Baustein oder eine klarere Grenze zwischen den Teilen baut darauf auf.",
+  },
+}
+
+function detectAreas(files) {
+  return PROJECT_AREAS.map((area) => ({
+    ...area,
+    samples: files.filter((path) => area.test.test(path)).slice(0, 5),
+  })).filter((area) => area.samples.length > 0)
+}
+
+/**
+ * Erzwingt die Pflichtbereiche.
+ *
+ * Ein Projekt mit Oberfläche soll immer je einen Vorschlag zur Oberfläche und
+ * zur Architektur bekommen — auch dann, wenn das Modell keinen liefert. Fehlt
+ * einer, wird er aus den erkannten Dateien gebaut; das Modell darf ihn nicht
+ * wegfallen lassen.
+ */
+function ensureAreaSuggestions(suggestions, areas, budget) {
+  const list = [...suggestions]
+  const hasArea = (key) =>
+    list.some(
+      (suggestion) =>
+        suggestion?.area === key ||
+        (key === "gui" &&
+          /\b(gui|ui|oberfläche|oberflaeche|ansicht|bedien|fenster)\b/i.test(
+            `${suggestion?.title} ${suggestion?.detail}`,
+          )) ||
+        (key === "architecture" &&
+          /\b(architektur|struktur|schicht|modul|paket|baustein)\b/i.test(
+            `${suggestion?.title} ${suggestion?.detail}`,
+          )),
+    )
+
+  const guaranteed = []
+  for (const area of areas) {
+    if (!area.mandatory || hasArea(area.key)) continue
+    const template = AREA_TEMPLATES[area.key]
+    if (!template) continue
+    guaranteed.push({
+      area: area.key,
+      title: template.title,
+      detail: withKind(template.kind, `${template.lead} ${area.samples.join(", ")}. ${template.tail}`),
+      prompt: "",
+    })
+  }
+
+  if (!guaranteed.length) return list.slice(0, budget)
+
+  // Fuer die Pflichtbereiche wird Platz freigehalten; das Modell darf sie nicht
+  // verdraengen. Der Rest behaelt seine Reihenfolge.
+  return [...list.slice(0, Math.max(0, budget - guaranteed.length)), ...guaranteed].slice(0, budget)
 }
 
 function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
@@ -883,7 +998,13 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     "`summary` ordnet das Projekt in 4 bis 8 Sätzen ein: wozu es dient, wie es aufgebaut ist, welche Technik es nutzt, wie weit es ist und was offensichtlich fehlt.",
     "`suggestions` ist ein Array mit höchstens " +
       MAX_SUGGESTIONS +
-      " Einträgen, jeweils {kind, title, detail, prompt}.",
+      " Einträgen, jeweils {kind, title, detail, prompt, area}.",
+    `Pflichtregel zu den Bereichen: Für jeden Bereich, der unten als Pflichtvorschlag steht, gehört genau ein Vorschlag dazu, der diesen Bereich erweitert. Für die übrigen erkannten Bereiche gilt: mindestens einer, solange die Ablage Belege hergibt.`,
+    "`area` benennt den Bereich eines Vorschlags mit genau einem dieser Schlüssel: " +
+      PROJECT_AREAS.map((area) => `"${area.key}"`).join(", ") +
+      ".",
+    'Ein Vorschlag zur Oberfläche (area "gui") erweitert die Bedienung — neue Ansicht, neuer Bedienweg, bessere Rückmeldung. Er ändert nicht nur Farben oder Abstände.',
+    'Ein Vorschlag zur Architektur (area "architecture") erweitert oder klärt den Aufbau — neuer Baustein, klarere Grenze, bessere Zerlegung. Er ist kein Sammeltitel für Aufräumarbeiten.',
     '`kind` ist genau einer von: "Erweitern", "Vertiefen", "Fortsetzen", "Absichern". Schwerpunkt ist der Ausbau, Absicherung die Ausnahme.',
     "`prompt` ist der fertige Auftrag, der später wortgleich in den Chat geht: mehrere Sätze, für sich verständlich, mit Ziel, betroffenen Dateien und woran die Fertigstellung zu erkennen ist.",
     "Stütze dich ausschließlich auf das, was unten steht; erfinde keine Dateien und keine Probleme. Nenne eine Datei nur, wenn sie im Baum vorkommt.",
@@ -1288,10 +1409,11 @@ export default {
         }
 
         const report = generated ? parseProjectReport(generated?.text ?? generated) : { summary: "", suggestions: [] }
-        const suggestions = (report.suggestions.length ? report.suggestions : projectFallback(files, evidence)).slice(
-          0,
-          MAX_SUGGESTIONS,
-        )
+        const suggestions = ensureAreaSuggestions(
+          report.suggestions.length ? report.suggestions : projectFallback(files, evidence),
+          analysis.areas,
+          suggestionBudget(evidence),
+        ).slice(0, MAX_SUGGESTIONS)
         if (!suggestions.length) {
           toast("Das Projekt gibt keinen nächsten Schritt her", "info")
           return true
