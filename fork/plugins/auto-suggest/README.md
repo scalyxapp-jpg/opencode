@@ -22,9 +22,21 @@ dieselbe Datei auch als Server-Plugin geladen und der Befehl erscheint nie.
 /next <fokus>      mit besonderem Augenmerk
 ```
 
-Die Auswahl wird **direkt abgeschickt**. Externe Plugins bekommen den Composer
-nicht zu sehen (`ui` hat keinen Prompt-Setter), deshalb gibt es keinen Weg, den
-Vorschlag nur einzufügen.
+Die Vorschläge erscheinen als **Formular inline im Verlauf** — dieselbe
+Darstellung wie eine Frage des question-Tools, mit nummerierter Liste,
+Beschreibungen und dem Hinweis `⇆ tab ↑↓ select enter toggle esc dismiss`.
+Kein Overlay-Fenster.
+
+**Bedienung:** `tab` wechselt zwischen Liste und `Submit`, `↑↓` wählt, `enter`
+hakt ab, dann `tab` auf `Submit` und `enter`. Mit `esc` wird verworfen.
+
+Der gewählte Vorschlag wird **direkt abgeschickt**. Externe Plugins bekommen den
+Composer nicht zu sehen (`ui` hat keinen Prompt-Setter), deshalb gibt es keinen
+Weg, ihn nur einzufügen.
+
+Das Formular nutzt `multiselect` mit `maxItems: 1`, weil es keinen eigenen
+Einzelauswahl-Typ gibt. `id` beim Anlegen ist nur eine optionale Kennung; Titel
+und Felder stehen auf oberster Ebene.
 
 Zusätzlich öffnet sich die Auswahl automatisch nach `session.idle`, sofern
 Belege vorliegen und der Turn nicht schon beantwortet wurde.

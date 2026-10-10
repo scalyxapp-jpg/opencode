@@ -186,6 +186,36 @@ function parseSuggestions(raw) {
   return [{ title: clip(text, 120), detail: "" }]
 }
 
+/**
+ * Wartet auf die Antwort des Formulars.
+ *
+ * Die Plugin-API meldet kein Ereignis fuer Antworten, deshalb wird der Zustand
+ * abgefragt. Das Formular liegt im Verlauf, bis es beantwortet oder abgebrochen
+ * wird.
+ */
+const FORM_POLL_MS = 800
+const FORM_TIMEOUT_MS = 10 * 60 * 1000
+
+async function waitForAnswer(client, sessionID, formID) {
+  const deadline = Date.now() + FORM_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, FORM_POLL_MS))
+    let detail
+    try {
+      detail = await client.session.form.get({ sessionID, formID })
+    } catch {
+      return undefined
+    }
+    const state = detail?.state
+    if (!state || state.status === "pending") continue
+    if (state.status === "cancelled") return undefined
+    const value = state.answer?.next
+    const chosen = Array.isArray(value) ? value[0] : value
+    return typeof chosen === "string" && chosen.trim() ? chosen : undefined
+  }
+  return undefined
+}
+
 export default {
   id: "auto-suggest",
 
@@ -231,21 +261,44 @@ export default {
           return true
         }
 
-        const chosen = await ui.dialog.select({
+        // Als Formular statt als Overlay: das rendert inline im Verlauf, genau
+        // wie eine Frage des question-Tools. maxItems 1 macht daraus eine
+        // Einzelauswahl, weil das Formular keinen eigenen select-Typ kennt.
+        // `id` ist nur eine optionale Formular-Kennung; Titel und Felder stehen
+        // auf oberster Ebene. Anders gelesen scheitert der Aufruf mit
+        // "Expected string | null at ["id"]".
+        const created = await client.session.form.create({
+          sessionID,
           title: "Was als Nächstes?",
-          placeholder: "Vorschlag filtern",
-          options: suggestions.map((suggestion) => ({
-            title: suggestion.title,
-            description: suggestion.detail || undefined,
-            value: suggestion,
-            category: "Vorschlag",
-          })),
+          fields: [
+            {
+              key: "next",
+              type: "multiselect",
+              title: "Vorschlag",
+              required: true,
+              minItems: 1,
+              maxItems: 1,
+              options: suggestions.map((suggestion) => ({
+                value: suggestion.title,
+                label: suggestion.title,
+                description: suggestion.detail || undefined,
+              })),
+            },
+          ],
         })
-        if (!chosen) return true
+
+        const formID = created?.id ?? created?.form?.id
+        if (!formID) {
+          toast("Formular konnte nicht angelegt werden", "warning")
+          return false
+        }
+
+        const picked = await waitForAnswer(client, sessionID, formID)
+        if (!picked) return true
 
         // Externe Plugins haben keinen Zugriff auf den Composer, deshalb wird der
         // Vorschlag direkt abgeschickt statt nur eingefügt.
-        await client.session.prompt({ sessionID, text: chosen.title })
+        await client.session.prompt({ sessionID, text: picked })
         return true
       } catch (cause) {
         toast(String(cause?.message ?? cause), "error")
