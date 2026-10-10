@@ -5,6 +5,8 @@
  * ohne die Session zu verändern — ein Vorschlag darf den Verlauf nicht berühren.
  */
 
+import type { SessionMessageInfo } from "@opencode/client"
+
 export type Suggestion = {
   title: string
   detail: string
@@ -29,6 +31,121 @@ export const instructions = [
   '"detail" ist ein Satz, der begründet, warum dieser Schritt jetzt sinnvoll ist.',
   "Gib drei bis vier Vorschläge, nach Nutzen sortiert.",
 ].join(" ")
+
+/**
+ * Was in dieser Session tatsächlich passiert ist.
+ *
+ * Grundlage sind ausschließlich die Tool-Aufrufe und Assistenten-Aussagen im
+ * Verlauf. Das ist die einzige Quelle, die die TUI belastbar hat: der Server
+ * liefert weder Todos noch einen Git-Diff, und `VcsInfo` kennt nur den Branch.
+ */
+export type Evidence = {
+  turns: number
+  files: string[]
+  commands: string[]
+  failures: Array<{ tool: string; target: string; error: string }>
+  lastClaim: string
+}
+
+const FILE_TOOLS = new Set(["read", "edit", "write", "patch", "glob", "grep"])
+const SHELL_TOOLS = new Set(["bash", "shell"])
+
+const stringField = (input: Record<string, unknown> | undefined, keys: string[]): string => {
+  if (!input) return ""
+  for (const key of keys) {
+    const value = input[key]
+    if (typeof value === "string" && value.trim()) return value.trim()
+  }
+  return ""
+}
+
+const clip50 = (value: string, max = 120): string => (value.length > max ? value.slice(0, max - 1) + "…" : value)
+
+const uniquePush = (list: string[], value: string, max: number) => {
+  if (value && !list.includes(value) && list.length < max) list.push(value)
+}
+
+/** Sammelt Belege aus dem Verlauf. Rein lesend, damit es ohne Kontext testbar bleibt. */
+export function collectEvidence(messages: ReadonlyArray<SessionMessageInfo>, maxFiles = 12, maxCommands = 8): Evidence {
+  const files: string[] = []
+  const commands: string[] = []
+  const failures: Evidence["failures"] = []
+  let turns = 0
+  let lastClaim = ""
+
+  for (const message of messages) {
+    if (message.type !== "assistant") continue
+    turns += 1
+
+    const text = (message.content ?? [])
+      .filter(
+        (block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string",
+      )
+      .map((block) => block.text)
+      .join("\n\n")
+      .trim()
+    if (text) lastClaim = clip50(text, 400)
+
+    for (const block of message.content ?? []) {
+      if (block.type !== "tool") continue
+      const state = block.state
+      const input = state.input as Record<string, unknown> | undefined
+
+      const target = stringField(input, ["filePath", "path", "pattern", "url"])
+      if (FILE_TOOLS.has(block.name)) uniquePush(files, target, maxFiles)
+      if (SHELL_TOOLS.has(block.name)) {
+        uniquePush(commands, clip50(stringField(input, ["command", "cmd"]), 100), maxCommands)
+      }
+
+      if (state.status === "error" && failures.length < 6) {
+        failures.push({
+          tool: block.name,
+          target: clip50(target || stringField(input, ["command"]), 70),
+          error: clip50(state.error.message, 140),
+        })
+      }
+    }
+  }
+
+  return { turns, files, commands, failures, lastClaim }
+}
+
+/** Baut den Auftrag samt Belegblock. Ohne Belege bleibt nur der Verlauf. */
+export function buildPrompt(evidence: Evidence, focus?: string): string {
+  const lines: string[] = [`Turns: ${evidence.turns}`]
+  if (evidence.files.length) lines.push(`Angefasste Dateien: ${evidence.files.join(", ")}`)
+  if (evidence.commands.length) lines.push(`Ausgeführte Befehle: ${evidence.commands.join(" | ")}`)
+  if (evidence.failures.length) {
+    lines.push("Fehlgeschlagene Aufrufe:")
+    for (const failure of evidence.failures) {
+      lines.push(`  - ${failure.tool} auf ${failure.target || "?"}: ${failure.error}`)
+    }
+  }
+  // Als Zitat mit Anführungszeichen: ein nackter Satz am Blockende lädt das
+  // Modell ein, den Verlauf fortzusetzen statt zu antworten.
+  if (evidence.lastClaim) lines.push(`Letzte Aussage, wörtliches Zitat: ${JSON.stringify(evidence.lastClaim)}`)
+  if (lines.length === 1) lines.push("Keine abgeschlossenen Arbeitsschritte im Verlauf.")
+
+  // Die Anweisung steht vorne und wird hinten wiederholt: die Belegliste in der
+  // Mitte soll das Format nicht überschreiben.
+  const task = [
+    "AUFGABE: Nenne drei bis vier nächste Arbeitsschritte.",
+    "Regeln:",
+    "1. Jeder Schritt muss sich auf einen Punkt der Belege unten stützen können.",
+    "2. Erfinde keine Dateien, Funktionen, Tests oder Probleme, die dort nicht stehen.",
+    "3. Wenn die Belege keinen sinnvollen Schritt hergeben, gib ein leeres Array zurück.",
+    focus ? `4. Besonderes Augenmerk: ${focus}` : "",
+    "",
+    "BELEGE (nur diese, keine Annahmen darüber hinaus):",
+    lines.join("\n"),
+    "",
+    'Antworte jetzt ausschließlich mit einem JSON-Array der Form [{"title":"…","detail":"…"}].',
+    "Kein Codezaun, kein Vorwort, keine Wiederholung dieser Anweisung.",
+    "Das erste Zeichen deiner Antwort ist [ und das letzte ].",
+  ].filter((line) => line !== undefined)
+
+  return task.join("\n")
+}
 
 /** Extrahiert das erste JSON-Array aus einer Antwort, auch aus einem Codezaun. */
 const extractArray = (text: string): unknown[] | undefined => {

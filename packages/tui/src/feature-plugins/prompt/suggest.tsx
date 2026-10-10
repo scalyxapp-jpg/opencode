@@ -1,19 +1,27 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { createSignal, Show } from "solid-js"
+import { createEffect, createSignal, Show } from "solid-js"
 import { Spinner } from "../../component/spinner"
+import { useConfig } from "../../config"
 import { usePromptRef } from "../../context/prompt"
 import { useTheme } from "../../context/theme"
 import { useToast } from "../../ui/toast"
 import { emptyPrompt } from "../../prompt/history"
-import { instructions, parseSuggestions, toOptions, type Suggestion } from "../../util/suggest"
+import { buildPrompt, collectEvidence, parseSuggestions, toOptions, type Suggestion } from "../../util/suggest"
+
+export const AUTO_SUGGEST_EXPERIMENT = "auto-suggest"
 
 /**
  * Fragt das Modell nach dem nächsten sinnvollen Schritt und lässt auswählen.
  *
  * Der Aufruf läuft über `session.generate`, das den Session-Kontext nutzt, ohne
  * die Session zu verändern — ein Vorschlag darf den Verlauf nicht berühren.
- * Der gewählte Vorschlag landet im Composer statt direkt im Versand: der Nutzer
- * soll ihn vor dem Abschicken lesen und ändern können.
+ *
+ * Die Belege stammen ausschließlich aus den Tool-Aufrufen dieser Session. Gibt
+ * es keine, wird gar nicht erst gefragt: ein Vorschlag ohne Grundlage wäre
+ * geraten, und geratene Vorschläge sind schlimmer als keine.
+ *
+ * Der gewählte Vorschlag landet im Composer statt direkt im Versand, damit er
+ * vor dem Abschicken lesbar und änderbar bleibt.
  */
 export default Plugin.define({
   id: "opencode.suggest",
@@ -39,6 +47,12 @@ export default Plugin.define({
       render() {
         const toast = useToast()
         const promptRef = usePromptRef()
+        const config = useConfig()
+
+        // Merkt sich den Turn, für den zuletzt gefragt wurde, damit der Dialog
+        // nicht bei jeder Zustandsaenderung erneut aufgeht.
+        let answered = ""
+        let armed = true
 
         const ask = async (focus: string | undefined, sessionID: string) => {
           if (pending()) return
@@ -54,22 +68,31 @@ export default Plugin.define({
             return
           }
 
+          const evidence = collectEvidence(context.data.session.message.list(sessionID))
+          const grounded = evidence.files.length > 0 || evidence.commands.length > 0 || evidence.failures.length > 0
+          if (!grounded) {
+            toast.show({
+              message: "Keine Belege in dieser Session — kein Vorschlag ohne Grundlage",
+              variant: "warning",
+            })
+            return
+          }
+
           setPending(true)
           try {
-            const prompt = focus ? `${instructions}\n\nBesonderes Augenmerk: ${focus}` : instructions
-            const result = await context.client.session.generate({ sessionID, prompt })
-            const parsed = parseSuggestions(result.text)
+            const generated = await context.client.session.generate({
+              sessionID,
+              prompt: buildPrompt(evidence, focus),
+            })
+            const parsed = parseSuggestions(generated.text)
 
             if (parsed.suggestions.length === 0) {
-              toast.show({ message: "Keine Vorschläge erhalten", variant: "warning" })
+              toast.show({ message: "Die Belege geben keinen nächsten Schritt her", variant: "info" })
               return
             }
 
             if (parsed.shape !== "json") {
-              toast.show({
-                message: `Modell antwortete nicht im JSON-Format (${parsed.shape})`,
-                variant: "warning",
-              })
+              toast.show({ message: `Modell antwortete nicht im JSON-Format (${parsed.shape})`, variant: "warning" })
             }
 
             const chosen = await context.ui.dialog.select<Suggestion>({
@@ -86,6 +109,36 @@ export default Plugin.define({
             setPending(false)
           }
         }
+
+        // Automatisch nach einem abgeschlossenen Schritt, sofern freigeschaltet.
+        // Bewusst zurückhaltend: nicht während der Nutzer tippt, nicht zweimal
+        // pro Turn, und nicht, solange schon etwas läuft.
+        createEffect(() => {
+          const route = context.ui.router.current()
+          if (route.type !== "session") return
+          const status = context.data.session.status(route.sessionID)
+
+          if (status !== "idle") {
+            armed = true
+            return
+          }
+          if (!config.data.experimental?.[AUTO_SUGGEST_EXPERIMENT]) return
+          if (!armed || pending()) return
+
+          const messages = context.data.session.message.list(route.sessionID)
+          const last = [...messages].reverse().find((message) => message.type === "assistant")
+          if (!last || last.id === answered) return
+          // Wer gerade tippt, will keinen Dialog vor die Nase gesetzt bekommen.
+          if (promptRef.current?.current.text) return
+
+          const evidence = collectEvidence(messages)
+          if (evidence.turns < 2) return
+          if (evidence.files.length + evidence.commands.length + evidence.failures.length === 0) return
+
+          armed = false
+          answered = last.id
+          void ask(undefined, route.sessionID)
+        })
 
         context.keymap.layer(() => ({
           mode: "global",
