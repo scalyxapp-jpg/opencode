@@ -262,8 +262,9 @@ export default {
         }
 
         // Als Formular statt als Overlay: das rendert inline im Verlauf, genau
-        // wie eine Frage des question-Tools. maxItems 1 macht daraus eine
-        // Einzelauswahl, weil das Formular keinen eigenen select-Typ kennt.
+        // wie eine Frage des question-Tools. Ein String-Feld MIT options ist der
+        // native Einzelauswahl-Typ: nur dann ist `single()` wahr und die
+        // Reiterzeile entfaellt, die sonst dasselbe Label doppelt zeigt.
         // `id` ist nur eine optionale Formular-Kennung; Titel und Felder stehen
         // auf oberster Ebene. Anders gelesen scheitert der Aufruf mit
         // "Expected string | null at ["id"]".
@@ -273,11 +274,9 @@ export default {
           fields: [
             {
               key: "next",
-              type: "multiselect",
+              type: "string",
               title: "Vorschlag",
               required: true,
-              minItems: 1,
-              maxItems: 1,
               options: suggestions.map((suggestion) => ({
                 value: suggestion.title,
                 label: suggestion.title,
