@@ -16,22 +16,25 @@
  * Anker in den Belegen (s. suggestionBudget), zwischen MIN_SUGGESTIONS und
  * MAX_SUGGESTIONS. Weniger zu liefern ist ausdrücklich erlaubt; auffüllen nicht.
  *
- * Die Auswahl geht von selbst auf, sobald der Agent einen Turn abgeschlossen
- * hat (Ereignis `session.execution.succeeded`, s. openAfterTurn) — aber nur
- * einmal pro Turn und nur, wenn die Belege wirklich etwas hergeben.
+ * Die Vorschläge kommen ausschliesslich auf Anforderung: ueber den Befehl
+ * `session.suggest` in der Palette oder die Eingabe `/next`. Es oeffnet sich
+ * nichts von selbst — auch nicht, wenn der Agent einen Turn abschliesst. Ein
+ * Ereignis allein kann nicht entscheiden, ob ein Vorschlag gerade passt, und
+ * mehrere Faktoren (mehrere Fenster, Hot-Reload, erneute Ereignisse) haben
+ * dafuer gesorgt, dass die Auswahl mehrfach hintereinander aufging.
  *
- * Es gibt genau ein Formular pro abgeschlossenem Turn: vor dem Anlegen wird
- * geprueft, ob schon eines offen ist (dann wird dieses benutzt), Doppelgaenger
- * werden geschlossen, nur der Ersteller schickt ab, und bei Zeitablauf raeumt
- * waitForAnswer selbst weg. Sonst sammeln sich Formulare an, und ein Abbruch mit
- * `esc` zeigt sofort das naechste gleich aussehende statt zu schliessen.
+ * Trotzdem ist das Formular gegen Mehrfachauftreten gesichert: vor dem Anlegen
+ * wird geprueft, ob schon eines offen ist (dann wird dieses benutzt),
+ * Doppelgaenger werden geschlossen, nur der Ersteller schickt ab, und bei
+ * Zeitablauf raeumt waitForAnswer selbst weg. Sonst sammeln sich Formulare an,
+ * und ein Abbruch mit `esc` zeigt sofort das naechste gleich aussehende statt zu
+ * schliessen.
  */
 
 const EVIDENCE_WINDOW = 40
 const MAX_FILES = 14
 const MAX_COMMANDS = 8
 const MAX_ASKS = 4
-const MIN_TURNS = 2
 
 // Die Anzahl ist nicht fest. Sie folgt der Belegdichte (s. suggestionBudget),
 // aber nie ueber MAX_SUGGESTIONS hinaus und nie unter MIN_SUGGESTIONS.
@@ -501,7 +504,6 @@ export default {
   async setup(context) {
     const { client, data, ui, keymap, storage } = context
     let pending = false
-    let answeredTurn = ""
 
     // Kennzeichnet die Formulare dieses Fensters. Mehrere offene Fenster hoeren
     // dasselbe Ereignis; nur der Erzeuger darf die Auswahl abschicken.
@@ -549,10 +551,11 @@ export default {
       pending = true
       try {
         // Erst nachsehen, ob schon ein Formular offen ist. Dann wird es benutzt
-        // statt ein zweites daneben zu legen: genau eines pro Mal.
+        // statt ein zweites daneben zu legen. Wartet und sendet dort ab, wer es
+        // angelegt hat: so kann dieselbe Auswahl nicht zweimal rausgehen.
         const openForm = await keepSoleForm(client, sessionID, INSTANCE_ID)
         if (openForm) {
-          await submitSelection(sessionID, openForm)
+          if (openForm.owned) await submitSelection(sessionID, openForm)
           return true
         }
 
@@ -611,8 +614,11 @@ export default {
         note({ action: "opened", sessionID, form: formID, count: suggestions.length })
 
         // Hat ein zweites Fenster gleichzeitig angelegt, bleibt genau eines
-        // stehen — und zwar dasselbe in beiden Fenstern (das aelteste).
+        // stehen — und zwar dasselbe in beiden Fenstern (das aelteste). Wer es
+        // nicht selbst angelegt hat, steigt hier aus: das andere Fenster wartet
+        // darauf und schickt die Auswahl ab.
         const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true }
+        if (!sole.owned) return true
         await submitSelection(sessionID, sole)
         return true
       } catch (cause) {
@@ -673,54 +679,9 @@ export default {
       ],
     }))
 
-    // Automatisch nach einem abgeschlossenen Schritt.
-    //
-    // `session.execution.succeeded` ist der einzige verlaessliche Marker dafuer,
-    // dass der Agent seinen Turn — also auch seine Zusammenfassung — fertig
-    // geschrieben hat. `session.idle` steht im Schema als deprecated und wird
-    // vom Server nirgends mehr veroeffentlicht; darauf allein hat die Auswahl
-    // nie von selbst aufgegangen.
-    //
-    // Kein "tippt gerade"-Guard möglich: die Plugin-API gibt den Composer nicht
-    // her. Deshalb nur einmal pro Turn und erst, wenn wirklich etwas passiert
-    // ist — sonst käme der Vorschlag aus dem Nichts.
-    const TURN_SETTLE_MS = 300
-    const TURN_SETTLE_TRIES = 6
-
-    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-
-    const lastAssistant = (sessionID) =>
-      [...(data.session.message.list(sessionID) ?? [])].reverse().find((message) => message.type === "assistant")
-
-    // Genau eine Vorschlagsrunde pro Anfrage — auch bei mehreren Fenstern oder
-    // nach einem Hot-Reload.
-    //
-    // Ein Ereignis allein reicht dafuer nicht: mehrere Plugin-Instanzen hoeren
-    // dasselbe `session.execution.succeeded` (jedes Fenster, und nach einem
-    // Hot-Reload auch die abgeloeste Fassung), und ein `pending`-Flag gilt nur
-    // innerhalb einer Instanz. Deshalb wird die Runde in der Plugin-Ablage
-    // beansprucht: das Schreiben laeuft unter Dateisperre, die Pruefung passiert
-    // darin, und nur wer sie gewinnt, legt ein Formular an.
-    //
-    // Schluessel ist die letzte Anfrage des Nutzers, nicht die letzte
-    // Assistenten-Nachricht: eine Anfrage kann mehrere Schritte und damit
-    // mehrere Assistenten-Nachrichten haben, ergibt aber genau eine Runde.
-    const CLAIM_KEY = "offered"
-    const claimedTurns = new Set()
-
-    let updateClaims
-    try {
-      const [, update] = storage.store(CLAIM_KEY, { initial: { turns: {} } })
-      updateClaims = update
-    } catch {
-      /* ohne Ablage bleibt die Sperre im Prozess */
-    }
-
-    // Spurensicherung: jede Runden-Entscheidung wird mitgeschrieben (begrenzt).
-    //
-    // Das Serverlog taugt dafuer nicht: es protokolliert nur Fehlantworten, ein
-    // erfolgreicher Aufruf steht nicht darin. Ohne diese Spur laesst sich ein
-    // erneutes Mehrfach-Auftreten nur erraten.
+    // Spurensicherung: was das Plugin bei welcher Runde entschieden hat
+    // (begrenzt). Das Serverlog taugt dafuer nicht — es protokolliert nur
+    // Fehlantworten, ein erfolgreicher Aufruf steht nicht darin.
     let writeDiagnostics
     try {
       const [, update] = storage.store("diagnostics", { initial: { log: [] } })
@@ -738,140 +699,6 @@ export default {
         void writeDiagnostics({ at: Date.now(), instance: INSTANCE_ID, ...entry }).catch(() => undefined)
       } catch {
         /* Spur ist freiwillig */
-      }
-    }
-
-    const claimTurn = async (sessionID, turnID) => {
-      const local = `${sessionID}:${turnID}`
-      if (claimedTurns.has(local)) return false
-      if (!updateClaims) {
-        claimedTurns.add(local)
-        note({ action: "claim", sessionID, turn: turnID, won: true, storage: false })
-        return true
-      }
-      let claimed = false
-      try {
-        await updateClaims((draft) => {
-          draft.turns ??= {}
-          if (draft.turns[sessionID] === turnID) return
-          draft.turns[sessionID] = turnID
-          claimed = true
-        })
-      } catch {
-        /* Ablage nicht schreibbar: es bleibt die Sperre im Prozess */
-      }
-      note({ action: "claim", sessionID, turn: turnID, won: claimed })
-      if (!claimed) return false
-      claimedTurns.add(local)
-      return true
-    }
-
-    /** Oeffnet die Auswahl einmal pro Turn, sobald der Agent fertig geschrieben hat. */
-    const openAfterTurn = async (event) => {
-      const sessionID = event?.data?.sessionID ?? currentSession()
-      if (!sessionID) return
-
-      // Immer aufraeumen, auch wenn diese Instanz die Runde nicht bekommt.
-      collectLooseForms(sessionID)
-
-      if (pending) {
-        note({ action: "skip", sessionID, reason: "Auswahl ist noch offen" })
-        return
-      }
-
-      // Das Ereignis wird beim Commit veroeffentlicht, die Nachrichtenliste des
-      // Clients kann einen Wimpernschlag hinterherhinken. Ein verpasster Turn
-      // bekommt kein zweites Signal, deshalb kurz nachfassen.
-      await wait(TURN_SETTLE_MS)
-      let last = lastAssistant(sessionID)
-      for (let attempt = 0; attempt < TURN_SETTLE_TRIES && (!last || last.id === answeredTurn); attempt++) {
-        await wait(TURN_SETTLE_MS)
-        last = lastAssistant(sessionID)
-      }
-      if (!last || last.id === answeredTurn) return
-
-      const { evidence } = readEvidence(sessionID)
-      if (evidence.turns < MIN_TURNS) {
-        note({ action: "skip", sessionID, reason: "zu wenig Turns" })
-        return
-      }
-      const didWork = evidence.edited.length + evidence.commands.length + evidence.failures.length > 0
-      if (!didWork) {
-        note({ action: "skip", sessionID, reason: "nichts passiert" })
-        return
-      }
-
-      answeredTurn = last.id
-
-      // Die Runde beanspruchen, bevor etwas generiert wird: sonst legt jede
-      // Instanz ihre eigene Runde mit eigenen Vorschlaegen an.
-      const requested = [...(data.session.message.list(sessionID) ?? [])]
-        .reverse()
-        .find((message) => message.type === "user")
-      if (!(await claimTurn(sessionID, requested?.id ?? last.id))) {
-        note({ action: "skip", sessionID, reason: "Runde ist schon vergeben" })
-        return
-      }
-
-      await ask(sessionID)
-    }
-
-    const onTurnSettled = (event) => {
-      void openAfterTurn(event).catch(() => {
-        /* ask() meldet Fehler selbst */
-      })
-    }
-
-    // Doppelte Formulare einsammeln, die andere Zuhoerer angelegt haben.
-    //
-    // Ohne Runden-Sperre legt jede Instanz ihre eigene Runde an — und ein
-    // Zuhoerer aus einer aelteren Fassung kennt die Sperre nicht. Deshalb wird
-    // nach jedem Ereignis verzoegert aufgeraeumt: `keepSoleForm` behaelt das
-    // aelteste Formular und schliesst den Rest. Das aelteste bleibt stehen, weil
-    // genau das die Oberflaeche zeigt und sein Ersteller darauf wartet.
-    const JANITOR_DELAY_MS = 2500
-    const janitors = new Map()
-
-    const collectLooseForms = (sessionID) => {
-      clearTimeout(janitors.get(sessionID))
-      janitors.set(
-        sessionID,
-        setTimeout(() => {
-          janitors.delete(sessionID)
-          void keepSoleForm(client, sessionID, INSTANCE_ID).catch(() => {
-            /* Aufraeumen ist freiwillig */
-          })
-        }, JANITOR_DELAY_MS),
-      )
-    }
-
-    // `session.idle` bleibt als Rueckfall eingetragen, falls eine Fassung ihn
-    // doch noch schickt. Doppelte Aufrufe faengt die Runden-Sperre ab.
-    //
-    // Zuhoerer sammeln und beim Abmelden mitnehmen.
-    //
-    // `data` gehoert dem Host, nicht dieser Aktivierung: `data.on` haengt am
-    // gemeinsamen Ereignisstrom und liefert den Abmelder. Wird er nicht
-    // zurueckgegeben, bleibt nach jedem Hot-Reload ein alter Zuhoerer aktiv —
-    // und dann erzeugt jede weitere Fassung ihre eigene Vorschlagsrunde, also
-    // mehrere Formulare mit jeweils eigenen Vorschlaegen pro Turn.
-    const unsubscribers = []
-    for (const type of ["session.execution.succeeded", "session.idle"]) {
-      try {
-        const unsubscribe = data.on(type, onTurnSettled)
-        if (typeof unsubscribe === "function") unsubscribers.push(unsubscribe)
-      } catch {
-        /* Ereignis nicht verfuegbar */
-      }
-    }
-
-    return () => {
-      for (const unsubscribe of unsubscribers) {
-        try {
-          unsubscribe()
-        } catch {
-          /* bereits abgemeldet */
-        }
       }
     }
   },

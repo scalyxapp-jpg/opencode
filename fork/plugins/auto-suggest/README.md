@@ -51,6 +51,10 @@ Damit das Label trotzdem nicht doppelt erscheint, trägt der Feldkopf einen
 Hinweis: gerendert wird `description ?? formLabel(field)`, also der Hinweis
 statt des Titels.
 
+Zur Nachvollziehbarkeit schreibt das Plugin bei jedem Anlegen einen Eintrag nach
+`<state>/<channel>/tui/plugin.auto-suggest.diagnostics.json` (die letzten 60):
+Instanz, Formular und Anzahl der Vorschläge.
+
 Warum das Feld keine Texteingabe wird: `formTextual(field)` in
 `packages/tui/src/util/form.ts` ist nur für `number`/`integer` oder `string`
 **ohne** `options` wahr. `formCustom(field)` bleibt ohne `custom: true` falsch,
@@ -61,53 +65,19 @@ Optionsliste.
 oberster Ebene. Anders gelesen scheitert der Aufruf mit
 `Expected string | null at ["id"]`.
 
-Zusätzlich öffnet sich die Auswahl von selbst, sobald der Agent einen Turn
-abgeschlossen hat. Auslöser ist das Ereignis **`session.execution.succeeded`**:
-es wird vom Laufzeitkoordinator beim Commit jedes abgeschlossenen Durchlaufs
-veröffentlicht. `session.idle` und `session.status` sind im Schema als
-deprecated markiert und werden vom Server nicht mehr publiziert — solange das
-Plugin darauf hörte, ging die Auswahl nie von selbst auf.
+### Es öffnet sich nichts von selbst
 
-Damit kein Turn verpasst wird, wartet der Handler einen Moment und fasst dann
-nach, bis die Nachrichtenliste des Clients den neuen Assistenten-Turn zeigt
-(das Ereignis kommt mit dem Commit, die Liste kann kurz hinterherhinken).
+Vorschläge kommen **ausschließlich** über `/next` (oder den Befehl
+`session.suggest` in der Palette). Das ist eine bewusste Entscheidung: ein
+Ereignis wie `session.execution.succeeded` kann nicht beurteilen, ob ein
+Vorschlag gerade passt, und mehrere Faktoren haben dafür gesorgt, dass die
+Auswahl mehrfach hintereinander aufging — mehrere offene Fenster (jedes mit
+eigener Plugin-Instanz und eigenem Zuhörer), Hot-Reloads, und Formulare, die
+serverseitig liegen blieben.
 
-Geöffnet wird nur, wenn mindestens zwei Auswertungs-Turns vorliegen und in der
-Session wirklich etwas passiert ist (Datei geändert, Befehl ausgeführt oder
-Fehlschlag), und höchstens einmal pro Turn. Sonst käme der Vorschlag aus dem
-Nichts.
-
-### Genau eine Runde pro Anfrage — auch bei Hot-Reload und mehreren Fenstern
-
-Das Ereignis allein genügt dafür nicht. Zwei Dinge sorgen sonst dafür, dass
-mehrere Formulare mit jeweils **eigenen** Vorschlägen erscheinen:
-
-- **Der Ereigniskanal räumt nicht selbst auf.** `data.on` hängt am globalen
-  Emitter des Hosts (`createGlobalEmitter`) und liefert einen Abmelder. Wird der
-  nicht zurückgegeben, bleibt nach **jedem Hot-Reload** der alte Zuhörer aktiv —
-  und jede weitere Fassung erzeugt dann ihre eigene Runde. `setup()` gibt
-  deshalb einen Aufräumer zurück, der die Zuhörer abmeldet; der Host ruft ihn
-  beim Ablösen auf.
-- **Ein `pending`-Flag gilt nur innerhalb einer Instanz.** Mehrere Fenster hören
-  dasselbe Ereignis. Deshalb wird die Runde in der **Plugin-Ablage** beansprucht
-  (`storage.store("offered")`): das Schreiben läuft unter Dateisperre, die
-  Prüfung passiert darin, und nur wer sie gewinnt, generiert und legt an. Der
-  Schlüssel ist die letzte **Anfrage des Nutzers**, nicht die letzte
-  Assistenten-Nachricht — eine Anfrage kann mehrere Schritte haben, ergibt aber
-  genau eine Runde.
-
-Zusammen mit `answeredTurn` und `keepSoleForm` heißt das: **eine Generierung,
-ein Formular, eine Absendung pro Anfrage.**
-
-> Nach einer Plugin-Änderung sollte opencode einmal neu gestartet werden.
-> Fassungen ohne Aufräumer haben ihre Zuhörer nie abgemeldet; die alten bleiben
-> bis zum Prozessende aktiv, weil ihre Runden nicht an der Ablage hängen.
-
-Zur Nachvollziehbarkeit schreibt das Plugin seine Runden-Entscheidungen nach
-`<state>/<channel>/tui/plugin.auto-suggest.diagnostics.json` (die letzten 60
-Einträge): wer wann eine Runde beansprucht hat, wer sie verloren hat und welches
-Formular entstanden ist. Das Serverlog taugt dafür **nicht** — es protokolliert
-nur Fehlantworten, erfolgreiche Aufrufe stehen nicht darin.
+Deshalb gibt es **keine Ereignis-Abonnements** mehr. `setup()` registriert nur
+noch das Kommando; es gibt nichts abzumelden und nichts, was im Hintergrund
+Runden auslösen kann.
 
 ### Es gibt genau ein Formular — nicht mehrere
 
@@ -115,9 +85,9 @@ Ein unbeantwortetes Formular bleibt serverseitig offen, und die Oberfläche zeig
 immer das **älteste**. Ohne Aufräumen sammelt sich deshalb eines nach dem
 anderen an: `esc` schließt dann zwar eines, aber an seiner Stelle erscheint
 sofort das nächste gleich aussehende — es wirkt, als ließe sich die Auswahl
-überhaupt nicht schließen, oder als ginge sie immer wieder von selbst auf.
+überhaupt nicht schließen.
 
-Dagegen vier Vorkehrungen:
+Dagegen drei Vorkehrungen:
 
 - **Erst nachsehen, dann anlegen.** Vor jedem Anlegen wird geprüft, ob schon ein
   Vorschlagsformular offen ist; dann wird **dieses benutzt** statt ein zweites
@@ -126,22 +96,16 @@ Dagegen vier Vorkehrungen:
 - **Doppelgänger werden weggeräumt** (`keepSoleForm`, erkannt am Feldschlüssel
   `next`). Es bleibt das älteste stehen, weil die Oberfläche genau das zeigt und
   sein Ersteller darauf wartet. Fremde Formulare — etwa Berechtigungsabfragen —
-  bleiben unangetastet. Zusätzlich läuft nach jedem Ereignis verzögert ein
-  Sammelgang (`collectLooseForms`), der auch Formulare einsammelt, die ein
-  Zuhörer aus einer älteren Fassung daneben gelegt hat.
-- **Nur der Ersteller sendet ab.** Jedes Formular trägt in den Metadaten eine
-  Besitzerkennung (`autoSuggestOwner`). Mehrere Fenster hören dasselbe Ereignis
-  und warten auf dasselbe Formular; ohne diese Kennung ginge dieselbe Auswahl
-  mehrfach raus. Wer nicht der Ersteller ist, wartet trotzdem — damit ein liegen
-  gebliebenes Formular nach der Wartezeit aufgeräumt wird.
+  bleiben unangetastet.
+- **Nur der Ersteller wartet und sendet ab.** Jedes Formular trägt in den
+  Metadaten eine Besitzerkennung (`autoSuggestOwner`). Fragen zwei Fenster
+  gleichzeitig, bleibt ein Formular stehen und nur dessen Ersteller schickt die
+  Auswahl ab; wer verloren hat, steigt sofort aus. So kann dieselbe Auswahl nicht
+  zweimal rausgehen — und es hängt niemand an einem Formular, das ihm nicht
+  gehört.
 - **Zeitablauf räumt selbst weg.** Läuft die Wartezeit von zehn Minuten ab, ohne
   dass jemand antwortet, wird das Formular abgebrochen (`waitForAnswer`) und
   bleibt nicht liegen.
-
-Zusammen mit `answeredTurn` (ein Durchlauf wird nur einmal ausgewertet) und dem
-`pending`-Riegel (während ein Formular offen ist, wird keines angelegt) ergibt
-das: **genau ein Formular pro abgeschlossenem Turn**, und nach `esc` kommt keines
-von selbst zurück.
 
 ## Woraus die Vorschläge entstehen
 
