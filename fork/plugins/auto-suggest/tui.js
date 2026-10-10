@@ -221,7 +221,7 @@ function collectEvidence(messages) {
 /** Auftrag samt Belegblock. Die Anweisung steht vorne und wird hinten wiederholt. */
 function buildPrompt(evidence, focus) {
   const budget = suggestionBudget(evidence)
-  const band = budget === MIN_SUGGESTIONS ? `${MIN_SUGGESTIONS}` : `${MIN_SUGGESTIONS} bis ${budget}`
+  const band = `${budget}`
 
   const lines = [`Erkannter Arbeitsmodus: ${evidence.mode}`]
   lines.push(`Turns in dieser Session: ${evidence.totalTurns}, davon betrachtet: ${evidence.turns}`)
@@ -251,8 +251,8 @@ function buildPrompt(evidence, focus) {
   if (lines.length === 2) lines.push("Kaum verwertbare Arbeitsschritte im Verlauf.")
 
   return [
-    `AUFGABE: Schlage ${band} nächste Arbeiten vor, die aus dieser Session folgen.`,
-    `Mehr als ${budget} werden es nie. Trägt die Session weniger, nimm weniger — auffüllen ist verboten.`,
+    `AUFGABE: Schlage genau ${band} nächste Arbeiten vor, die aus dieser Session folgen.`,
+    `Es sind genau ${budget}. Wenn die Session weniger Belege trägt, fülle mit weiteren technischen Ausbau-Ideen auf, die an den erkennbaren Stand anknüpfen — aber erfinde keine Dateien, Funktionen oder Probleme.`,
     "Der Schwerpunkt liegt auf dem Ausbau: neue Fähigkeiten, neue Anwendungsfälle und Ideen,",
     "die auf dem entstandenen Stand aufbauen. Absicherung ist die Ausnahme, nicht die Regel.",
     "",
@@ -349,18 +349,15 @@ const withKind = (kind, detail) => {
  * Die Stufen sind bewusst grob: feiner wäre eine Genauigkeit, die die Belege
  * nicht hergeben.
  */
-function suggestionBudget(evidence) {
-  const anchors =
-    evidence.edited.length +
-    evidence.readOnly.length +
-    evidence.commands.length +
-    evidence.asks.length +
-    evidence.signals.length
-
-  if (anchors <= 5) return MIN_SUGGESTIONS
-  if (anchors <= 10) return 5
-  if (anchors <= 16) return 7
-  return 9
+/**
+ * Wie viele Vorschlaege es werden.
+ *
+ * Die Anzahl steht fest: es sind immer MAX_SUGGESTIONS. Traegt die Session
+ * weniger Belege, wird mit weiteren technischen Ausbau-Ideen aufgefuellt, die an
+ * den erkennbaren Stand anknuepfen — nicht mit erfundenen Dateien oder Problemen.
+ */
+function suggestionBudget() {
+  return MAX_SUGGESTIONS
 }
 
 /** Doppelte Titel fliegen raus, und nie mehr als das harte Maximum. */
@@ -1108,7 +1105,7 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     "AUFGABE: Verschaffe dir einen Überblick über dieses Projekt und schlage danach die nächsten Arbeiten vor.",
     'Antworte ausschließlich mit einem JSON-Objekt der Form {"summary":"…","suggestions":[…]}, ohne Codezaun, ohne Vorwort.',
     "`summary` ordnet das Projekt in 4 bis 8 Sätzen ein: wozu es dient, wie es aufgebaut ist, welche Technik es nutzt, wie weit es ist und was offensichtlich fehlt.",
-    "`suggestions` ist ein Array mit höchstens " +
+    "`suggestions` ist ein Array mit genau " +
       MAX_SUGGESTIONS +
       " Einträgen, jeweils {kind, title, detail, prompt, area}.",
     `Pflichtregel zu den Bereichen: Für jeden Bereich, der unten als Pflichtvorschlag steht, gehört genau ein Vorschlag dazu, der diesen Bereich erweitert. Für die übrigen erkannten Bereiche gilt: mindestens einer, solange die Ablage Belege hergibt.`,
