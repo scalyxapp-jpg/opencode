@@ -15,6 +15,10 @@
  * Die Anzahl der Vorschläge steht nicht fest: sie folgt der Zahl unabhängiger
  * Anker in den Belegen (s. suggestionBudget), zwischen MIN_SUGGESTIONS und
  * MAX_SUGGESTIONS. Weniger zu liefern ist ausdrücklich erlaubt; auffüllen nicht.
+ *
+ * Die Auswahl geht von selbst auf, sobald der Agent einen Turn abgeschlossen
+ * hat (Ereignis `session.execution.succeeded`, s. openAfterTurn) — aber nur
+ * einmal pro Turn und nur, wenn die Belege wirklich etwas hergeben.
  */
 
 const EVIDENCE_WINDOW = 40
@@ -569,15 +573,38 @@ export default {
     }))
 
     // Automatisch nach einem abgeschlossenen Schritt.
+    //
+    // `session.execution.succeeded` ist der einzige verlaessliche Marker dafuer,
+    // dass der Agent seinen Turn — also auch seine Zusammenfassung — fertig
+    // geschrieben hat. `session.idle` steht im Schema als deprecated und wird
+    // vom Server nirgends mehr veroeffentlicht; darauf allein hat die Auswahl
+    // nie von selbst aufgegangen.
+    //
     // Kein "tippt gerade"-Guard möglich: die Plugin-API gibt den Composer nicht
     // her. Deshalb nur einmal pro Turn und erst, wenn wirklich etwas passiert
     // ist — sonst käme der Vorschlag aus dem Nichts.
-    const onIdle = (event) => {
-      const sessionID = event?.data?.sessionID ?? currentSession()
-      if (!sessionID) return
+    const TURN_SETTLE_MS = 300
+    const TURN_SETTLE_TRIES = 6
 
-      const messages = data.session.message.list(sessionID) ?? []
-      const last = [...messages].reverse().find((message) => message.type === "assistant")
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+    const lastAssistant = (sessionID) =>
+      [...(data.session.message.list(sessionID) ?? [])].reverse().find((message) => message.type === "assistant")
+
+    /** Oeffnet die Auswahl einmal pro Turn, sobald der Agent fertig geschrieben hat. */
+    const openAfterTurn = async (event) => {
+      const sessionID = event?.data?.sessionID ?? currentSession()
+      if (!sessionID || pending) return
+
+      // Das Ereignis wird beim Commit veroeffentlicht, die Nachrichtenliste des
+      // Clients kann einen Wimpernschlag hinterherhinken. Ein verpasster Turn
+      // bekommt kein zweites Signal, deshalb kurz nachfassen.
+      await wait(TURN_SETTLE_MS)
+      let last = lastAssistant(sessionID)
+      for (let attempt = 0; attempt < TURN_SETTLE_TRIES && (!last || last.id === answeredTurn); attempt++) {
+        await wait(TURN_SETTLE_MS)
+        last = lastAssistant(sessionID)
+      }
       if (!last || last.id === answeredTurn) return
 
       const { evidence } = readEvidence(sessionID)
@@ -586,13 +613,23 @@ export default {
       if (!didWork) return
 
       answeredTurn = last.id
-      void ask(sessionID)
+      await ask(sessionID)
     }
 
-    try {
-      data.on("session.idle", onIdle)
-    } catch {
-      /* Ereignis nicht verfuegbar */
+    const onTurnSettled = (event) => {
+      void openAfterTurn(event).catch(() => {
+        /* ask() meldet Fehler selbst */
+      })
+    }
+
+    // `session.idle` bleibt als Rueckfall eingetragen, falls eine Fassung ihn
+    // doch noch schickt. Doppelte Aufrufe faengt `answeredTurn` ab.
+    for (const type of ["session.execution.succeeded", "session.idle"]) {
+      try {
+        data.on(type, onTurnSettled)
+      } catch {
+        /* Ereignis nicht verfuegbar */
+      }
     }
   },
 }

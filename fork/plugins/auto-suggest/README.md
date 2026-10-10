@@ -57,10 +57,21 @@ Das Feld trägt `title: "Vorschlag"`. Die verbleibende Feldüberschrift ist
 oberster Ebene. Anders gelesen scheitert der Aufruf mit
 `Expected string | null at ["id"]`.
 
-Zusätzlich öffnet sich die Auswahl automatisch nach `session.idle` — aber nur,
-wenn mindestens zwei Auswertungs-Turns vorliegen und in der Session wirklich
-etwas passiert ist (Datei geändert, Befehl ausgeführt oder Fehlschlag), und
-höchstens einmal pro Turn. Sonst käme der Vorschlag aus dem Nichts.
+Zusätzlich öffnet sich die Auswahl von selbst, sobald der Agent einen Turn
+abgeschlossen hat. Auslöser ist das Ereignis **`session.execution.succeeded`**:
+es wird vom Laufzeitkoordinator beim Commit jedes abgeschlossenen Durchlaufs
+veröffentlicht. `session.idle` und `session.status` sind im Schema als
+deprecated markiert und werden vom Server nicht mehr publiziert — solange das
+Plugin darauf hörte, ging die Auswahl nie von selbst auf.
+
+Damit kein Turn verpasst wird, wartet der Handler einen Moment und fasst dann
+nach, bis die Nachrichtenliste des Clients den neuen Assistenten-Turn zeigt
+(das Ereignis kommt mit dem Commit, die Liste kann kurz hinterherhinken).
+
+Geöffnet wird nur, wenn mindestens zwei Auswertungs-Turns vorliegen und in der
+Session wirklich etwas passiert ist (Datei geändert, Befehl ausgeführt oder
+Fehlschlag), und höchstens einmal pro Turn. Sonst käme der Vorschlag aus dem
+Nichts.
 
 ## Woraus die Vorschläge entstehen
 
