@@ -273,6 +273,7 @@ function buildPrompt(evidence, focus) {
     'Jeder Vorschlag ist technische Arbeit am Code oder am Projekt: bauen, umbauen, prüfen, verstehen. Rein Organisatorisches ist kein Vorschlag — kein "git commit", kein "push", kein Release, kein Changelog, kein Ticket, kein Termin.',
     'Ein "Erweitern"-Vorschlag ist ein vollständiges Feature, kein Detail: eine neue Funktion, eine neue Ansicht, ein neuer Modus, ein neuer Befehl, eine neue Auswertung, eine neue Automatik oder ein neuer Anwendungsfall.',
     "Er nennt den Nutzen in einem Satz, den Weg dorthin (wo im Code es ansetzt) und was neu entsteht. Im `prompt` steht das Feature als Ganzes, nicht sein erster Handgriff.",
+    "Halte es knapp: `detail` höchstens etwa 15 Wörter, `prompt` zwei bis drei Sätze (Richtwert 300 Zeichen). Zehn vollständige Einträge müssen in eine Antwort passen.",
     'Jeder "Erweitern"-Vorschlag verbessert die Nutzung: weniger Schritte, klarere Rückmeldung oder mehr Möglichkeiten als heute. Ein Erweitern-Vorschlag, der nur umbenennt, umsortiert oder aufräumt, ist keiner.',
     focus ? `8. Besonderes Augenmerk: ${focus}` : "",
     "",
@@ -402,7 +403,7 @@ function parseSuggestions(raw) {
             return {
               title: clip(title, 120),
               detail: withKind(kind, detail),
-              prompt: clip(prompt, 1200),
+              prompt: clip(prompt, 420),
               ...(area ? { area } : {}),
             }
           })
@@ -1123,6 +1124,7 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     'Jeder Vorschlag ist technische Arbeit am Code oder am Projekt: bauen, umbauen, prüfen, verstehen. Rein Organisatorisches ist kein Vorschlag — kein "git commit", kein "push", kein Release, kein Changelog, kein Ticket, kein Termin.',
     'Die Mehrheit der Vorschläge sind "Erweitern": mindestens die Hälfte, ab sechs Vorschlägen mindestens zwei Drittel.',
     'Ein "Erweitern"-Vorschlag ist ein vollständiges Feature, kein Detail: eine neue Funktion, eine neue Ansicht, ein neuer Modus, ein neuer Befehl, eine neue Auswertung, eine neue Automatik oder ein neuer Anwendungsfall — und er verbessert die Nutzung.',
+    "Halte es knapp: `detail` höchstens etwa 15 Wörter, `prompt` zwei bis drei Sätze (Richtwert 300 Zeichen). Alle Einträge müssen vollständig in eine Antwort passen.",
     "Wenn das Projekt zu wenig hergibt, liefere weniger Vorschläge statt geratener.",
     focus ? `Besonderes Augenmerk: ${focus}` : "",
     "",
