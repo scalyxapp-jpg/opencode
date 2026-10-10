@@ -7,8 +7,21 @@ import { SidebarContext } from "../../src/feature-plugins/sidebar/context"
 
 function context(options?: { cost?: number; tokens?: number }) {
   const color = RGBA.fromInts(200, 200, 200)
+  const success = RGBA.fromInts(80, 200, 120)
+  const warning = RGBA.fromInts(220, 180, 60)
+  const error = RGBA.fromInts(230, 80, 80)
   return {
-    theme: { text: { base: color, muted: color } },
+    theme: {
+      text: {
+        base: color,
+        muted: color,
+        feedback: {
+          success: { base: success },
+          warning: { base: warning },
+          error: { base: error },
+        },
+      },
+    },
     data: {
       session: {
         get: () => ({ location: { directory: "/workspace" } }),
@@ -62,8 +75,12 @@ test("sidebar shows available context usage", async () => {
 
   try {
     await app.renderOnce()
-    expect(app.captureCharFrame()).toContain("Context")
-    expect(app.captureCharFrame()).toContain("1,234 tokens")
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("Context")
+    // Ohne Modell-Limit bleibt es bei der Tokenzahl, aber als Pulszeile.
+    expect(frame).toMatch(/[\u2581-\u2588]/)
+    expect(frame).toContain("1.2K")
+    expect(frame).toContain("1 turn")
   } finally {
     app.renderer.destroy()
   }

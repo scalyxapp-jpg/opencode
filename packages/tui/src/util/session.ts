@@ -103,20 +103,12 @@ export function contextPressure(
     ? models?.find((item) => item.providerID === last.model.providerID && item.id === last.model.id)
     : undefined
   const limit = model?.limit.context
-  const level: ContextLevel =
-    usage.percent === undefined || usage.percent >= ERROR_PERCENT
-      ? usage.percent === undefined
-        ? "ok"
-        : "error"
-      : usage.percent >= WARNING_PERCENT
-        ? "warning"
-        : "ok"
   return {
     tokens: usage.tokens,
     percent: usage.percent,
     limit,
     remaining: limit === undefined ? undefined : Math.max(0, limit - usage.tokens),
-    level,
+    level: levelFor(usage.percent),
   }
 }
 
@@ -131,4 +123,72 @@ export function formatContextPressure(pressure: NonNullable<ReturnType<typeof co
   const plain = pressure.percent === undefined ? tokens : `${tokens} (${pressure.percent}%)`
   if (pressure.level === "ok" || pressure.remaining === undefined) return plain
   return `${pressure.percent}% · ${Locale.number(pressure.remaining)} free`
+}
+
+export type ContextSample = {
+  tokens: number
+  percent?: number
+  level: ContextLevel
+  /** true direkt nach einer Kompaktierung — der Kontext ist dort abgesackt. */
+  compacted: boolean
+  cost: number
+  model?: string
+}
+
+/**
+ * Kontextverlauf über die Turns einer Session, älteste zuerst.
+ *
+ * Ein Wert pro Assistant-Message, der den Prompt-Umfang dieses Turns zeigt.
+ * Weil die Werte nicht monoton wachsen, wird eine Kompaktierung als Sprung
+ * sichtbar — genau das macht der Verlauf lesbar.
+ */
+export function contextTimeline(
+  messages: ReadonlyArray<SessionMessageInfo>,
+  models: ReadonlyArray<ModelInfo> | undefined,
+  boundary?: string,
+): ContextSample[] {
+  const boundaryIndex = boundary ? messages.findIndex((message) => message.id === boundary) : -1
+  if (boundary && boundaryIndex === -1) return []
+  const end = boundaryIndex === -1 ? messages.length : boundaryIndex
+
+  const samples: ContextSample[] = []
+  let compacted = false
+
+  for (const message of messages.slice(0, end)) {
+    if (message.type === "compaction" && message.status === "completed") {
+      compacted = true
+      continue
+    }
+    if (message.type !== "assistant" || !message.tokens) continue
+
+    const tokens =
+      message.tokens.input +
+      message.tokens.output +
+      message.tokens.reasoning +
+      message.tokens.cache.read +
+      message.tokens.cache.write
+    if (tokens <= 0) continue
+
+    const model = models?.find((item) => item.providerID === message.model.providerID && item.id === message.model.id)
+    const percent = model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : undefined
+
+    samples.push({
+      tokens,
+      percent,
+      level: levelFor(percent),
+      compacted,
+      cost: message.cost ?? 0,
+      model: `${message.model.providerID}/${message.model.id}`,
+    })
+    compacted = false
+  }
+
+  return samples
+}
+
+const levelFor = (percent: number | undefined): ContextLevel => {
+  if (percent === undefined) return "ok"
+  if (percent >= ERROR_PERCENT) return "error"
+  if (percent >= WARNING_PERCENT) return "warning"
+  return "ok"
 }
