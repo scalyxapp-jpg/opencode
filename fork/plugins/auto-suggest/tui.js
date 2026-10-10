@@ -19,6 +19,11 @@
  * Die Auswahl geht von selbst auf, sobald der Agent einen Turn abgeschlossen
  * hat (Ereignis `session.execution.succeeded`, s. openAfterTurn) — aber nur
  * einmal pro Turn und nur, wenn die Belege wirklich etwas hergeben.
+ *
+ * Es steht nie mehr als ein Formular offen: vor jedem neuen werden eigene
+ * offene geschlossen, und bei Zeitablauf raeumt waitForAnswer selbst weg.
+ * Sonst sammeln sich Formulare an, und ein Abbruch mit `esc` zeigt sofort das
+ * naechste gleich aussehende statt zu schliessen.
  */
 
 const EVIDENCE_WINDOW = 40
@@ -415,9 +420,16 @@ function parseSuggestions(raw) {
  * Die Plugin-API meldet kein Ereignis fuer Antworten, deshalb wird der Zustand
  * abgefragt. Das Formular liegt im Verlauf, bis es beantwortet oder abgebrochen
  * wird.
+ *
+ * Zurueck kommt immer eine Liste: das Feld ist eine Mehrfachauswahl, damit
+ * mehrere Vorschlaege auf einmal uebernommen werden koennen. Ein Abbruch und
+ * eine leere Auswahl ergeben dieselbe leere Liste — beides heisst "nichts tun".
  */
 const FORM_POLL_MS = 800
 const FORM_TIMEOUT_MS = 10 * 60 * 1000
+
+/** Schluessel des Vorschlagsfeldes: daran werden eigene Formulare erkannt. */
+const FORM_KEY = "next"
 
 async function waitForAnswer(client, sessionID, formID) {
   const deadline = Date.now() + FORM_TIMEOUT_MS
@@ -427,16 +439,42 @@ async function waitForAnswer(client, sessionID, formID) {
     try {
       detail = await client.session.form.get({ sessionID, formID })
     } catch {
-      return undefined
+      return []
     }
     const state = detail?.state
     if (!state || state.status === "pending") continue
-    if (state.status === "cancelled") return undefined
-    const value = state.answer?.next
-    const chosen = Array.isArray(value) ? value[0] : value
-    return typeof chosen === "string" && chosen.trim() ? chosen : undefined
+    if (state.status === "cancelled") return []
+    const value = state.answer?.[FORM_KEY]
+    return (Array.isArray(value) ? value : [value]).filter((item) => typeof item === "string" && item.trim())
   }
-  return undefined
+  // Laeuft die Zeit ab, ohne dass jemand antwortet, muss das Formular weg.
+  // Sonst bleibt es serverseitig offen und steht beim naechsten Mal daneben.
+  await cancelForm(client, sessionID, formID)
+  return []
+}
+
+/**
+ * Raeumt eigene, noch offene Formulare weg.
+ *
+ * Ein unbeantwortetes Formular bleibt serverseitig offen — und die Oberflaeche
+ * zeigt immer das aelteste. Ohne dieses Aufraeumen sammelt sich eines nach dem
+ * anderen an: `esc` schliesst dann zwar eines, aber an seiner Stelle erscheint
+ * sofort das naechste gleich aussehende. Das wirkt, als liesse sich die Auswahl
+ * ueberhaupt nicht schliessen. Deshalb: hoechstens ein offenes Formular.
+ */
+async function reapForms(client, sessionID) {
+  let pending
+  try {
+    pending = await client.session.form.list({ sessionID })
+  } catch {
+    return
+  }
+  const mine = (pending ?? []).filter((form) => (form?.fields ?? []).some((field) => field?.key === FORM_KEY))
+  await Promise.all(mine.map((form) => cancelForm(client, sessionID, form.id)))
+}
+
+function cancelForm(client, sessionID, formID) {
+  return client.session.form.cancel({ sessionID, formID }).catch(() => undefined)
 }
 
 export default {
@@ -488,6 +526,10 @@ export default {
 
       pending = true
       try {
+        // Vor jedem neuen Formular liegen gebliebene wegraeumen, damit nie zwei
+        // offen stehen und `esc` wirklich schliesst.
+        await reapForms(client, sessionID)
+
         const generated = await client.session.generate({ sessionID, prompt: buildPrompt(evidence, focus) })
 
         // Zweite, belegbasierte Bremse: das Modell darf sich an der Obergrenze
@@ -504,9 +546,12 @@ export default {
         const title = `${base} (${suggestions.length})`
 
         // Als Formular statt als Overlay: das rendert inline im Verlauf, genau
-        // wie eine Frage des question-Tools. Ein String-Feld MIT options ist der
-        // native Einzelauswahl-Typ: nur dann ist `single()` wahr und die
-        // Reiterzeile entfaellt, die sonst dasselbe Label doppelt zeigt.
+        // wie eine Frage des question-Tools. `multiselect` ist der native
+        // Mehrfachauswahl-Typ; nur dort wirken minItems/maxItems und nur dort
+        // kommt die Antwort als Liste zurueck. `single()` ist damit falsch, die
+        // Reiterzeile zeigt deshalb den Titel. Damit das Label trotzdem nicht
+        // doppelt erscheint, traegt der Feldkopf einen Hinweis (description)
+        // statt des Titels.
         // `id` ist nur eine optionale Formular-Kennung; Titel und Felder stehen
         // auf oberster Ebene. Anders gelesen scheitert der Aufruf mit
         // "Expected string | null at ["id"]".
@@ -516,9 +561,11 @@ export default {
           fields: [
             {
               key: "next",
-              type: "string",
-              title: "Vorschlag",
+              type: "multiselect",
+              title: "Vorschläge",
+              description: "Enter wählt an, Tab und Enter übernehmen alle gewählten",
               required: true,
+              minItems: 1,
               options: suggestions.map((suggestion) => ({
                 value: suggestion.title,
                 label: suggestion.title,
@@ -535,11 +582,19 @@ export default {
         }
 
         const picked = await waitForAnswer(client, sessionID, formID)
-        if (!picked) return true
+        if (!picked.length) return true
 
-        // Externe Plugins haben keinen Zugriff auf den Composer, deshalb wird der
-        // Vorschlag direkt abgeschickt statt nur eingefügt.
-        await client.session.prompt({ sessionID, text: picked })
+        // Externe Plugins haben keinen Zugriff auf den Composer, deshalb wird die
+        // Auswahl direkt abgeschickt statt nur eingefügt. Mehrere Vorschläge
+        // gehen als eine Anfrage mit Reihenfolge raus: daraus wird ein Turn
+        // statt mehrerer, und der Agent kann die Arbeit selbst aufteilen.
+        const text =
+          picked.length === 1
+            ? picked[0]
+            : `Übernimm diese Vorschläge der Reihe nach:\n${picked
+                .map((item, index) => `${index + 1}. ${item}`)
+                .join("\n")}`
+        await client.session.prompt({ sessionID, text })
         return true
       } catch (cause) {
         toast(String(cause?.message ?? cause), "error")

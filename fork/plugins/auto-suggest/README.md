@@ -23,35 +23,39 @@ dieselbe Datei auch als Server-Plugin geladen und der Befehl erscheint nie.
 ```
 
 Die Vorschläge erscheinen als **Formular inline im Verlauf** — dieselbe
-Darstellung wie eine Frage des question-Tools, mit nummerierter Liste,
-Beschreibungen und dem Hinweis `↑↓ select enter submit esc dismiss`.
+Darstellung wie eine Frage des question-Tools, mit nummerierter Liste, Kästchen
+zum Anhaken, Beschreibungen und dem Hinweis
+`⇆ tab ↑↓ select enter toggle esc dismiss`.
 Kein Overlay-Fenster.
 
-**Bedienung:** `↑↓` wählt, `enter` schickt die Auswahl ab, `esc` verwirft.
-Einfachauswahl ohne `tab`: das Formular hat genau ein Feld, und die Reiterzeile
-des Formulars entfällt (siehe unten).
+**Bedienung:** `↑↓` wählt, `enter`/`space` hakt an, `tab` und `enter` übernehmen
+die angehakten Vorschläge, `esc` verwirft.
+
+Werden mehrere Vorschläge angehakt, gehen sie als **eine** Anfrage mit
+Reihenfolge raus (`Übernimm diese Vorschläge der Reihe nach: …`); daraus wird ein
+Turn statt mehrerer, und der Agent teilt die Arbeit selbst auf.
 
 Der gewählte Vorschlag wird **direkt abgeschickt**. Externe Plugins bekommen den
 Composer nicht zu sehen (`ui` hat keinen Prompt-Setter), deshalb gibt es keinen
 Weg, ihn nur einzufügen.
 
-Das Formular nutzt ein **String-Feld mit `options`** — das ist der native
-Einzelauswahl-Typ der Formular-API. Nur damit ist `single()` in der TUI wahr
-(`field.type === "string" && field.options !== undefined`) und die Reiterzeile
-entfällt; ein `multiselect` (auch mit `maxItems: 1`) schaltet sie ein und das
-Formular zeigt dasselbe Feldlabel zweimal — einmal in der Reiterzeile, einmal
-als Feldüberschrift.
+Das Feld ist eine **Mehrfachauswahl** (`multiselect` mit `minItems: 1`), damit
+mehrere Vorschläge auf einmal übernommen werden können; ausgewählt wird mit
+`enter`/`space`, übernommen mit `tab` und `enter`. Nur bei diesem Feldtyp
+wirken `minItems`/`maxItems`, und nur bei ihm kommt die Antwort als Liste
+zurück. Der Einzelauswahl-Typ `string` mit `options` erlaubt das nicht.
+
+Weil `single()` in der TUI nur für `boolean` oder `string` **mit** `options`
+wahr wird, ist die Reiterzeile hier sichtbar — sie zeigt `formLabel(field)`.
+Damit das Label trotzdem nicht doppelt erscheint, trägt der Feldkopf einen
+Hinweis: gerendert wird `description ?? formLabel(field)`, also der Hinweis
+statt des Titels.
 
 Warum das Feld keine Texteingabe wird: `formTextual(field)` in
 `packages/tui/src/util/form.ts` ist nur für `number`/`integer` oder `string`
 **ohne** `options` wahr. `formCustom(field)` bleibt ohne `custom: true` falsch,
 es gibt also auch keinen Freitext-Eintrag. `formRows(field)` liefert die
 Optionsliste.
-
-Das Feld trägt `title: "Vorschlag"`. Die verbleibende Feldüberschrift ist
-`description ?? formLabel(field)` mit
-`formLabel(field) = field.title ?? field.key` — der Titel erscheint damit
-**genau einmal**.
 
 `id` beim Anlegen ist nur eine optionale Kennung; Titel und Felder stehen auf
 oberster Ebene. Anders gelesen scheitert der Aufruf mit
@@ -72,6 +76,22 @@ Geöffnet wird nur, wenn mindestens zwei Auswertungs-Turns vorliegen und in der
 Session wirklich etwas passiert ist (Datei geändert, Befehl ausgeführt oder
 Fehlschlag), und höchstens einmal pro Turn. Sonst käme der Vorschlag aus dem
 Nichts.
+
+### Es steht nie mehr als ein Formular offen
+
+Ein unbeantwortetes Formular bleibt serverseitig offen, und die Oberfläche
+zeigt immer das **älteste**. Ohne Aufräumen sammelt sich deshalb eines nach dem
+anderen an: `esc` schließt dann zwar eines, aber an seiner Stelle erscheint
+sofort das nächste gleich aussehende — es wirkt, als ließe sich die Auswahl
+überhaupt nicht schließen.
+
+Dagegen zwei Vorkehrungen:
+
+- Vor jedem neuen Formular werden eigene offene Formulare geschlossen
+  (`reapForms`, erkannt am Feldschlüssel `next`; fremde Formulare bleiben
+  unangetastet).
+- Läuft die Wartezeit von zehn Minuten ab, ohne dass jemand antwortet, wird das
+  Formular abgebrochen (`waitForAnswer`) und bleibt nicht liegen.
 
 ## Woraus die Vorschläge entstehen
 
