@@ -582,7 +582,7 @@ async function keepSoleForm(client, sessionID, owner) {
   const [keep, ...duplicates] = forms
   if (!keep) return undefined
   await Promise.all(duplicates.map((form) => cancelForm(client, sessionID, form.id)))
-  return { id: keep.id, owned: keep.metadata?.[FORM_OWNER] === owner }
+  return { id: keep.id, owned: keep.metadata?.[FORM_OWNER] === owner, removed: duplicates.length }
 }
 
 function cancelForm(client, sessionID, formID) {
@@ -662,9 +662,14 @@ export default {
         // angelegt hat: so kann dieselbe Auswahl nicht zweimal rausgehen.
         const openForm = await keepSoleForm(client, sessionID, INSTANCE_ID)
         if (openForm) {
+          note({ action: "reuse", sessionID, form: openForm.id, owned: openForm.owned, removed: openForm.removed })
           if (openForm.owned) await submitSelection(sessionID, openForm, undefined, evidence)
           return true
         }
+
+        // Die Abfrage dauert je nach Groesse der Session mehrere Sekunden. Ohne
+        // Rueckmeldung wirkt das wie ein Haenger.
+        toast("Frage das Modell nach Vorschlägen …", "info")
 
         const generated = await client.session.generate({ sessionID, prompt: buildPrompt(evidence, focus) })
 
@@ -724,7 +729,8 @@ export default {
         // stehen — und zwar dasselbe in beiden Fenstern (das aelteste). Wer es
         // nicht selbst angelegt hat, steigt hier aus: das andere Fenster wartet
         // darauf und schickt die Auswahl ab.
-        const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true }
+        const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true, removed: 0 }
+        if (sole.removed) note({ action: "sole", sessionID, form: sole.id, owned: sole.owned, removed: sole.removed })
         if (!sole.owned) return true
         await submitSelection(sessionID, sole, suggestions, evidence)
         return true
