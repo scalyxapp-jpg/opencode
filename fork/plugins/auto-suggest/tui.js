@@ -221,7 +221,7 @@ function collectEvidence(messages) {
 /** Auftrag samt Belegblock. Die Anweisung steht vorne und wird hinten wiederholt. */
 function buildPrompt(evidence, focus) {
   const budget = suggestionBudget(evidence)
-  const band = `${budget}`
+  const band = budget === MIN_SUGGESTIONS ? `${MIN_SUGGESTIONS}` : `${MIN_SUGGESTIONS} bis ${budget}`
 
   const lines = [`Erkannter Arbeitsmodus: ${evidence.mode}`]
   lines.push(`Turns in dieser Session: ${evidence.totalTurns}, davon betrachtet: ${evidence.turns}`)
@@ -251,8 +251,8 @@ function buildPrompt(evidence, focus) {
   if (lines.length === 2) lines.push("Kaum verwertbare Arbeitsschritte im Verlauf.")
 
   return [
-    `AUFGABE: Schlage genau ${band} nächste Arbeiten vor, die aus dieser Session folgen.`,
-    `Es sind genau ${budget}. Wenn die Session weniger Belege trägt, fülle mit weiteren technischen Ausbau-Ideen auf, die an den erkennbaren Stand anknüpfen — aber erfinde keine Dateien, Funktionen oder Probleme.`,
+    `AUFGABE: Schlage ${band} nächste Arbeiten vor, die aus dieser Session folgen.`,
+    `Mehr als ${budget} werden es nie. Trägt die Session weniger, nimm weniger — auffüllen ist verboten.`,
     "Der Schwerpunkt liegt auf dem Ausbau: neue Fähigkeiten, neue Anwendungsfälle und Ideen,",
     "die auf dem entstandenen Stand aufbauen. Absicherung ist die Ausnahme, nicht die Regel.",
     "",
@@ -273,7 +273,6 @@ function buildPrompt(evidence, focus) {
     'Jeder Vorschlag ist technische Arbeit am Code oder am Projekt: bauen, umbauen, prüfen, verstehen. Rein Organisatorisches ist kein Vorschlag — kein "git commit", kein "push", kein Release, kein Changelog, kein Ticket, kein Termin.',
     'Ein "Erweitern"-Vorschlag ist ein vollständiges Feature, kein Detail: eine neue Funktion, eine neue Ansicht, ein neuer Modus, ein neuer Befehl, eine neue Auswertung, eine neue Automatik oder ein neuer Anwendungsfall.',
     "Er nennt den Nutzen in einem Satz, den Weg dorthin (wo im Code es ansetzt) und was neu entsteht. Im `prompt` steht das Feature als Ganzes, nicht sein erster Handgriff.",
-    "Halte es knapp: `detail` höchstens etwa 15 Wörter, `prompt` zwei bis drei Sätze (Richtwert 300 Zeichen). Zehn vollständige Einträge müssen in eine Antwort passen.",
     'Jeder "Erweitern"-Vorschlag verbessert die Nutzung: weniger Schritte, klarere Rückmeldung oder mehr Möglichkeiten als heute. Ein Erweitern-Vorschlag, der nur umbenennt, umsortiert oder aufräumt, ist keiner.',
     focus ? `8. Besonderes Augenmerk: ${focus}` : "",
     "",
@@ -350,15 +349,18 @@ const withKind = (kind, detail) => {
  * Die Stufen sind bewusst grob: feiner wäre eine Genauigkeit, die die Belege
  * nicht hergeben.
  */
-/**
- * Wie viele Vorschlaege es werden.
- *
- * Die Anzahl steht fest: es sind immer MAX_SUGGESTIONS. Traegt die Session
- * weniger Belege, wird mit weiteren technischen Ausbau-Ideen aufgefuellt, die an
- * den erkennbaren Stand anknuepfen — nicht mit erfundenen Dateien oder Problemen.
- */
-function suggestionBudget() {
-  return MAX_SUGGESTIONS
+function suggestionBudget(evidence) {
+  const anchors =
+    evidence.edited.length +
+    evidence.readOnly.length +
+    evidence.commands.length +
+    evidence.asks.length +
+    evidence.signals.length
+
+  if (anchors <= 5) return MIN_SUGGESTIONS
+  if (anchors <= 10) return 5
+  if (anchors <= 16) return 7
+  return 9
 }
 
 /** Doppelte Titel fliegen raus, und nie mehr als das harte Maximum. */
@@ -403,7 +405,7 @@ function parseSuggestions(raw) {
             return {
               title: clip(title, 120),
               detail: withKind(kind, detail),
-              prompt: clip(prompt, 420),
+              prompt: clip(prompt, 1200),
               ...(area ? { area } : {}),
             }
           })
@@ -1106,7 +1108,7 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     "AUFGABE: Verschaffe dir einen Überblick über dieses Projekt und schlage danach die nächsten Arbeiten vor.",
     'Antworte ausschließlich mit einem JSON-Objekt der Form {"summary":"…","suggestions":[…]}, ohne Codezaun, ohne Vorwort.',
     "`summary` ordnet das Projekt in 4 bis 8 Sätzen ein: wozu es dient, wie es aufgebaut ist, welche Technik es nutzt, wie weit es ist und was offensichtlich fehlt.",
-    "`suggestions` ist ein Array mit genau " +
+    "`suggestions` ist ein Array mit höchstens " +
       MAX_SUGGESTIONS +
       " Einträgen, jeweils {kind, title, detail, prompt, area}.",
     `Pflichtregel zu den Bereichen: Für jeden Bereich, der unten als Pflichtvorschlag steht, gehört genau ein Vorschlag dazu, der diesen Bereich erweitert. Für die übrigen erkannten Bereiche gilt: mindestens einer, solange die Ablage Belege hergibt.`,
@@ -1124,7 +1126,6 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     'Jeder Vorschlag ist technische Arbeit am Code oder am Projekt: bauen, umbauen, prüfen, verstehen. Rein Organisatorisches ist kein Vorschlag — kein "git commit", kein "push", kein Release, kein Changelog, kein Ticket, kein Termin.',
     'Die Mehrheit der Vorschläge sind "Erweitern": mindestens die Hälfte, ab sechs Vorschlägen mindestens zwei Drittel.',
     'Ein "Erweitern"-Vorschlag ist ein vollständiges Feature, kein Detail: eine neue Funktion, eine neue Ansicht, ein neuer Modus, ein neuer Befehl, eine neue Auswertung, eine neue Automatik oder ein neuer Anwendungsfall — und er verbessert die Nutzung.',
-    "Halte es knapp: `detail` höchstens etwa 15 Wörter, `prompt` zwei bis drei Sätze (Richtwert 300 Zeichen). Alle Einträge müssen vollständig in eine Antwort passen.",
     "Wenn das Projekt zu wenig hergibt, liefere weniger Vorschläge statt geratener.",
     focus ? `Besonderes Augenmerk: ${focus}` : "",
     "",
