@@ -59,6 +59,45 @@ Ranking: Trefferhäufigkeit × 2, plus Bonus für User- (3) und Assistant-Messag
 Liest `session_v2` und ergänzt `session`-Zeilen ohne v2-Gegenstück, ist also über beide
 Schema-Generationen hinweg vollständig. Cache-Hit-Rate = `cache_read / (cache_read + input)`.
 
+## TUI-Features (Branches `tui-cost-meter`, `sidebar-pulse`)
+
+Diese Änderungen liegen **im opencode-Quellcode** unter `packages/tui`, nicht in `ocf`.
+
+### `/cost` — Session-Rechnung
+
+Kosten und Token je Modell, Summenzeile, Cache-Hit-Rate, Cache-Writes und ein
+Kontextbalken. Grundlage sind die `tokens`/`cost`-Felder, die opencode pro
+Assistant-Message speichert und bisher nirgends anzeigt.
+
+### Kontextdruck in der Prompt-Footerzeile
+
+`contextPressure()` liefert Tokenzahl, Prozent, Restbudget und eine Druckstufe.
+Ab 70 % wechselt die Zeile auf `text.feedback.warning`, ab 90 % auf
+`text.feedback.error`, und das Format wechselt von `168.4K (16%)` auf
+`70% · 314.6K free`.
+
+Unter Druck bleibt die Zeile bewusst kurz: `promptFooterLayout` gibt bei Breite 80
+nur 44 Zeichen für usage + shortcuts frei.
+
+### Context-Puls in der Sidebar
+
+Sparkline des Kontextverlaufs über die Turns, älteste links, jeder Balken nach
+eigener Druckstufe eingefärbt. Skaliert gegen den Spitzenwert der Session, zeigt
+auf 42 Spalten die letzten 34 Turns. Weil die Werte nicht monoton wachsen, macht
+eine Kompaktierung den Verlauf lesbar.
+
+### Erweitertes `/status`
+
+Statt nur MCP-Servern auch Provider- und Modell-Zustand: nutzbare Provider,
+leerer Modellkatalog und eine Handlungsanweisung. Deckt den klassischen
+Fehlerfall ab, dass kein Provider authentifiziert ist.
+
+### Storybook
+
+`session-cost` und `context-pulse` unter
+`packages/tui/src/feature-plugins/system/storybook`. Start:
+`OPENCODE_STORY=context-pulse bun run dev:live` aus dem Repo-Wurzelverzeichnis.
+
 ## Sicherheitsgarantien
 
 - Die DB wird mit `readonly: true` **und** `PRAGMA query_only = 1` geöffnet. Ein Absturz
