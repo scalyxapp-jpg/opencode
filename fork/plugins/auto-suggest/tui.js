@@ -734,7 +734,148 @@ function objectSlice(text) {
   return start !== -1 && end > start ? text.slice(start, end + 1) : ""
 }
 
-function buildProjectPrompt(root, files, keyFiles, focus, limits) {
+const STACK_MARKERS = [
+  { test: /(^|\/)package\.json$/, name: "Node/JS" },
+  { test: /(^|\/)tsconfig[^/]*\.json$/, name: "TypeScript" },
+  { test: /(^|\/)bun\.lockb?$/, name: "Bun" },
+  { test: /(^|\/)pnpm-lock\.yaml$/, name: "pnpm" },
+  { test: /(^|\/)yarn\.lock$/, name: "Yarn" },
+  { test: /(^|\/)package-lock\.json$/, name: "npm" },
+  { test: /(^|\/)pyproject\.toml$/, name: "Python" },
+  { test: /(^|\/)cargo\.toml$/i, name: "Rust" },
+  { test: /(^|\/)go\.mod$/, name: "Go" },
+  { test: /(^|\/)pom\.xml$/, name: "Maven/Java" },
+  { test: /(^|\/)build\.gradle(\.kts)?$/, name: "Gradle/Android" },
+  { test: /(^|\/)project\.godot$/, name: "Godot" },
+  { test: /(^|\/)composer\.json$/, name: "PHP" },
+  { test: /(^|\/)gemfile$/i, name: "Ruby" },
+  { test: /(^|\/)flake\.nix$/, name: "Nix" },
+  { test: /(^|\/)dockerfile$/i, name: "Docker" },
+  { test: /(^|\/)compose\.ya?ml$/i, name: "Compose" },
+]
+
+const PROJECT_EXTENSIONS = [
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "py",
+  "rs",
+  "go",
+  "kt",
+  "java",
+  "cs",
+  "swift",
+  "rb",
+  "php",
+  "lua",
+  "gd",
+  "vue",
+  "svelte",
+  "css",
+  "scss",
+  "html",
+  "md",
+  "sql",
+  "proto",
+  "sh",
+  "yml",
+  "toml",
+  "json",
+]
+
+const BUILT_MARKERS = [
+  { test: /(^|\/)(test|tests|spec|specs|__tests__)\//i, label: "Tests" },
+  { test: /\.(test|spec)\.[a-z]+$/i, label: "Tests" },
+  { test: /(^|\/)readme/i, label: "Dokumentation (README)" },
+  { test: /(^|\/)(docs?|documentation)\//i, label: "Dokumentation" },
+  { test: /(^|\/)\.github\/workflows\//i, label: "Automatische Prüfung (CI)", required: true },
+  { test: /(^|\/)(dockerfile|compose\.ya?ml)$/i, label: "Container/Start" },
+  { test: /(^|\/)license/i, label: "Lizenz" },
+  { test: /(^|\/)(migrations?|schema\.sql)\b/i, label: "Datenbank/Schema" },
+  { test: /(^|\/)(routes?|router|api|handlers?)\b/i, label: "API/Routen" },
+  { test: /(^|\/)(components?|pages?|views?)\b/i, label: "Oberfläche" },
+  { test: /(^|\/)(cli|bin)\b/i, label: "Kommandozeile" },
+  { test: /(^|\/)(plugins?|extensions?)\b/i, label: "Erweiterungen" },
+  { test: /(^|\/)i18n\//i, label: "Übersetzungen" },
+  { test: /(^|\/)(\.env\.example|\.env\.template)$/i, label: "Konfigurationsvorlage" },
+]
+
+const PROJECT_REQUIRED = [
+  { test: /(^|\/)(test|tests|spec|specs|__tests__)\//i, label: "Tests" },
+  { test: /\.(test|spec)\.[a-z]+$/i, label: "Tests" },
+  { test: /(^|\/)readme/i, label: "README" },
+  { test: /(^|\/)\.github\/workflows\//i, label: "CI" },
+  { test: /(^|\/)license/i, label: "Lizenz" },
+  { test: /(^|\/)(dockerfile|compose\.ya?ml)$/i, label: "Container/Start" },
+]
+
+/** Die Skriptnamen aus package.json, falls sie in den Schlüsseldateien steht. */
+function manifestScripts(keyFiles) {
+  const block = (keyFiles ?? []).find((part) => part.startsWith("--- package.json"))
+  if (!block) return ""
+  try {
+    const parsed = JSON.parse(block.slice(block.indexOf("\n") + 1))
+    const names = Object.keys(parsed.scripts ?? {})
+    return names.slice(0, 12).join(", ")
+  } catch {
+    return ""
+  }
+}
+
+/**
+ * Technische Einordnung des Projekts — aus der Ablage abgeleitet, nicht geraten.
+ *
+ * Das Modell soll nicht erraten, was fuer ein Projekt das ist und was schon
+ * steht: Oekosystem, Sprachen, Schwerpunkte im Baum, Vorhandenes und Fehlendes
+ * werden hier deterministisch bestimmt und mitgeschickt. Das macht die
+ * Vorschlaege belastbar und den Auftrag kleiner.
+ */
+function analyzeProject(files, keyFiles) {
+  const has = (pattern) => files.some((path) => pattern.test(path))
+
+  const stack = STACK_MARKERS.filter((marker) => has(marker.test)).map((marker) => marker.name)
+  const languages = PROJECT_EXTENSIONS.map((name) => ({
+    name,
+    files: files.filter((path) => path.toLowerCase().endsWith(`.${name}`)).length,
+  }))
+    .filter((item) => item.files > 0)
+    .sort((left, right) => right.files - left.files)
+    .slice(0, 8)
+
+  const groups = new Map()
+  for (const path of files) {
+    const segment = path.includes("/") ? path.split("/")[0] : "(Wurzel)"
+    groups.set(segment, (groups.get(segment) ?? 0) + 1)
+  }
+  const layout = [...groups.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 14)
+    .map(([name, count]) => `${name} (${count})`)
+
+  const built = [...new Set(BUILT_MARKERS.filter((marker) => has(marker.test)).map((marker) => marker.label))]
+  const missing = [...new Set(PROJECT_REQUIRED.filter((marker) => !has(marker.test)).map((marker) => marker.label))]
+  const scripts = manifestScripts(keyFiles)
+
+  const text = [
+    "TECHNISCHE EINORDNUNG (aus der Ablage abgeleitet, nicht geraten):",
+    `- Ökosystem und Werkzeuge: ${stack.join(", ") || "keine typischen Manifeste gefunden"}`,
+    `- Sprachen nach Dateizahl: ${languages.map((item) => `${item.name} ${item.files}`).join(", ") || "keine erkannt"}`,
+    `- Schwerpunkte im Baum: ${layout.join(", ") || "keine"}`,
+    `- Bereits vorhanden: ${built.join(", ") || "nichts davon erkannt"}`,
+    `- Fehlt offensichtlich: ${missing.join(", ") || "nichts davon erkannt"}`,
+    scripts ? `- Skripte laut Manifest: ${scripts}` : "",
+    `- Lesbare Textdateien insgesamt: ${files.length}`,
+  ]
+    .filter((line) => line !== "")
+    .join("\n")
+
+  return { text, missing, built, stack, files, count: files.length }
+}
+
+function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
   const size = limits ?? PROJECT_LIMITS
   return [
     "AUFGABE: Verschaffe dir einen Überblick über dieses Projekt und schlage danach die nächsten Arbeiten vor.",
@@ -746,12 +887,16 @@ function buildProjectPrompt(root, files, keyFiles, focus, limits) {
     '`kind` ist genau einer von: "Erweitern", "Vertiefen", "Fortsetzen", "Absichern". Schwerpunkt ist der Ausbau, Absicherung die Ausnahme.',
     "`prompt` ist der fertige Auftrag, der später wortgleich in den Chat geht: mehrere Sätze, für sich verständlich, mit Ziel, betroffenen Dateien und woran die Fertigstellung zu erkennen ist.",
     "Stütze dich ausschließlich auf das, was unten steht; erfinde keine Dateien und keine Probleme. Nenne eine Datei nur, wenn sie im Baum vorkommt.",
+    "Die technische Einordnung ist abgeleitet, nicht geraten — baue deine Vorschläge darauf auf: nenne den Stand, den du dort findest, und knüpfe an das an, was schon gebaut ist.",
+    "Was in der Einordnung als fehlend steht, ist ein belegter Anknüpfungspunkt, aber nicht automatisch ein Vorschlag.",
     "Wenn das Projekt zu wenig hergibt, liefere weniger Vorschläge statt geratener.",
     focus ? `Besonderes Augenmerk: ${focus}` : "",
     "",
     `PROJEKTVERZEICHNIS: ${root}`,
-    `DATEIEN IM BAUM (${files.length}, gekürzt):`,
-    clip(files.join("\n"), size.treeChars),
+    analysis.text,
+    "",
+    `DATEIEN IM BAUM (${analysis.count}, gekürzt):`,
+    clip(analysis.files.join("\n"), size.treeChars),
     "",
     `SCHLÜSSELDATEIEN (${keyFiles.length} von höchstens ${size.keyFiles}, gekürzt):`,
     keyFiles.join("\n\n") || "(keine lesbare Schlüsseldatei gefunden)",
@@ -1120,12 +1265,13 @@ export default {
           toast(`Schlüsseldateien ${done}/${total}`, "info")
         })
 
-        toast("Fasse das Projekt zusammen und baue Vorschläge …", "info")
+        const analysis = analyzeProject(files, keyFiles)
+        toast("Wertee das Projekt technisch aus und baue Vorschläge …", "info")
         let generated
         try {
           generated = await client.session.generate({
             sessionID,
-            prompt: buildProjectPrompt(root, files, keyFiles, focus),
+            prompt: buildProjectPrompt(root, analysis, keyFiles, focus),
           })
         } catch (cause) {
           // Scheitert der erste Versuch am Umfang (der Anbieter antwortet etwa
@@ -1134,7 +1280,7 @@ export default {
           try {
             generated = await client.session.generate({
               sessionID,
-              prompt: buildProjectPrompt(root, files, keyFiles, focus, PROJECT_COMPACT),
+              prompt: buildProjectPrompt(root, analysis, keyFiles, focus, PROJECT_COMPACT),
             })
           } catch (again) {
             toast(`Modell nicht erreichbar (${again?.message ?? again}) — Vorschläge aus dem Projekt`, "warning")
