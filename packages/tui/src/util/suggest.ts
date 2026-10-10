@@ -40,7 +40,10 @@ export const instructions = [
  * liefert weder Todos noch einen Git-Diff, und `VcsInfo` kennt nur den Branch.
  */
 export type Evidence = {
+  /** Turns im betrachteten Fenster. */
   turns: number
+  /** Turns in der ganzen Session — als Maßstab, wie viel vorher passierte. */
+  totalTurns: number
   files: string[]
   commands: string[]
   failures: Array<{ tool: string; target: string; error: string }>
@@ -49,6 +52,16 @@ export type Evidence = {
 
 const FILE_TOOLS = new Set(["read", "edit", "write", "patch", "glob", "grep"])
 const SHELL_TOOLS = new Set(["bash", "shell"])
+
+/**
+ * Wie viele Turns zurück die Belege reichen.
+ *
+ * Eine Session kann hunderte Turns umfassen. Für "was ist der nächste Schritt"
+ * zählt die aktuelle Arbeit, nicht der Anfang der Session: in einer Session mit
+ * 1352 Turns über 105 Dateien lagen die ersten zwölf Dateien im Rückblick
+ * vollständig daneben — keine einzige war noch aktuell.
+ */
+const EVIDENCE_WINDOW = 40
 
 const stringField = (input: Record<string, unknown> | undefined, keys: string[]): string => {
   if (!input) return ""
@@ -59,64 +72,76 @@ const stringField = (input: Record<string, unknown> | undefined, keys: string[])
   return ""
 }
 
-const clip50 = (value: string, max = 120): string => (value.length > max ? value.slice(0, max - 1) + "…" : value)
+const clipField = (value: string, max = 120): string => (value.length > max ? value.slice(0, max - 1) + "…" : value)
 
-const uniquePush = (list: string[], value: string, max: number) => {
-  if (value && !list.includes(value) && list.length < max) list.push(value)
-}
+/** Sammelt Belege, neueste zuerst. Rein lesend, damit es ohne Kontext testbar bleibt. */
+export function collectEvidence(
+  messages: ReadonlyArray<SessionMessageInfo>,
+  maxFiles = 12,
+  maxCommands = 8,
+  window = EVIDENCE_WINDOW,
+): Evidence {
+  const assistant = messages.filter((message) => message.type === "assistant")
+  // Das Fenster zählt Assistenten-Turns, nicht Rohzeilen: eine lange Session
+  // enthält viele Nutzer- und Systemzeilen dazwischen.
+  const recent = assistant.slice(-window)
 
-/** Sammelt Belege aus dem Verlauf. Rein lesend, damit es ohne Kontext testbar bleibt. */
-export function collectEvidence(messages: ReadonlyArray<SessionMessageInfo>, maxFiles = 12, maxCommands = 8): Evidence {
   const files: string[] = []
   const commands: string[] = []
   const failures: Evidence["failures"] = []
-  let turns = 0
   let lastClaim = ""
 
-  for (const message of messages) {
-    if (message.type !== "assistant") continue
-    turns += 1
+  const add = (list: string[], value: string, max: number) => {
+    if (value && !list.includes(value) && list.length < max) list.push(value)
+  }
 
-    const text = (message.content ?? [])
-      .filter(
-        (block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string",
-      )
-      .map((block) => block.text)
-      .join("\n\n")
-      .trim()
-    if (text) lastClaim = clip50(text, 400)
+  // Rückwärts, damit die Grenzen von den neuesten Einträgen verbraucht werden.
+  for (let index = recent.length - 1; index >= 0; index--) {
+    const message = recent[index]!
+    const content = message.content ?? []
 
-    for (const block of message.content ?? []) {
+    if (!lastClaim) {
+      const text = content
+        .filter(
+          (block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string",
+        )
+        .map((block) => block.text)
+        .join("\n\n")
+        .trim()
+      if (text) lastClaim = clipField(text, 400)
+    }
+
+    for (const block of content) {
       if (block.type !== "tool") continue
       const state = block.state
       const input = state.input as Record<string, unknown> | undefined
-
       const target = stringField(input, ["filePath", "path", "pattern", "url"])
-      if (FILE_TOOLS.has(block.name)) uniquePush(files, target, maxFiles)
-      if (SHELL_TOOLS.has(block.name)) {
-        uniquePush(commands, clip50(stringField(input, ["command", "cmd"]), 100), maxCommands)
-      }
+
+      if (FILE_TOOLS.has(block.name)) add(files, target, maxFiles)
+      if (SHELL_TOOLS.has(block.name)) add(commands, clipField(stringField(input, ["command", "cmd"]), 100), maxCommands)
 
       if (state.status === "error" && failures.length < 6) {
         failures.push({
           tool: block.name,
-          target: clip50(target || stringField(input, ["command"]), 70),
-          error: clip50(state.error.message, 140),
+          target: clipField(target || stringField(input, ["command"]), 70),
+          error: clipField(state.error.message, 140),
         })
       }
     }
   }
 
-  return { turns, files, commands, failures, lastClaim }
+  return { turns: recent.length, totalTurns: assistant.length, files, commands, failures, lastClaim }
 }
+
 
 /** Baut den Auftrag samt Belegblock. Ohne Belege bleibt nur der Verlauf. */
 export function buildPrompt(evidence: Evidence, focus?: string): string {
-  const lines: string[] = [`Turns: ${evidence.turns}`]
-  if (evidence.files.length) lines.push(`Angefasste Dateien: ${evidence.files.join(", ")}`)
-  if (evidence.commands.length) lines.push(`Ausgeführte Befehle: ${evidence.commands.join(" | ")}`)
+  const lines: string[] = [`Turns in dieser Session: ${evidence.totalTurns}, davon betrachtet: ${evidence.turns}`]
+  if (evidence.files.length) lines.push(`Zuletzt angefasste Dateien (neueste zuerst): ${evidence.files.join(", ")}`)
+  if (evidence.commands.length)
+    lines.push(`Zuletzt ausgeführte Befehle (neueste zuerst): ${evidence.commands.join(" | ")}`)
   if (evidence.failures.length) {
-    lines.push("Fehlgeschlagene Aufrufe:")
+    lines.push("Fehlgeschlagene Aufrufe (neueste zuerst):")
     for (const failure of evidence.failures) {
       lines.push(`  - ${failure.tool} auf ${failure.target || "?"}: ${failure.error}`)
     }

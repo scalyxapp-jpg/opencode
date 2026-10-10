@@ -27,6 +27,8 @@ const assistant = (tools: ToolInput[], text?: string): SessionMessageInfo =>
     ],
   }) as unknown as SessionMessageInfo
 
+const read = (path: string) => assistant([{ name: "read", input: { filePath: path } }])
+
 describe("collectEvidence", () => {
   test("sammelt angefasste Dateien ohne Wiederholungen", () => {
     const evidence = collectEvidence([
@@ -36,7 +38,7 @@ describe("collectEvidence", () => {
       ]),
       assistant([{ name: "write", input: { filePath: "b.ts" } }]),
     ])
-    expect(evidence.files).toEqual(["a.ts", "b.ts"])
+    expect(evidence.files.toSorted()).toEqual(["a.ts", "b.ts"])
   })
 
   test("sammelt ausgeführte Befehle", () => {
@@ -51,22 +53,31 @@ describe("collectEvidence", () => {
     expect(evidence.failures).toEqual([{ tool: "edit", target: "x.ts", error: "oldString not found" }])
   })
 
-  test("zählt Turns und merkt sich die letzte Aussage", () => {
+  test("zählt Turns und merkt sich die neueste Aussage", () => {
     const evidence = collectEvidence([assistant([], "erste"), assistant([], "zweite und letzte")])
     expect(evidence.turns).toBe(2)
+    expect(evidence.totalTurns).toBe(2)
     expect(evidence.lastClaim).toBe("zweite und letzte")
   })
 
-  test("ignoriert Nutzer- und Systemnachrichten", () => {
+  test("ignoriert Nutzer- und Systemnachrichten beim Zählen", () => {
     const messages = [
       { id: "u", type: "user", text: "mach" },
       { id: "s", type: "system", text: "x" },
     ] as unknown as SessionMessageInfo[]
     expect(collectEvidence(messages).turns).toBe(0)
+    expect(collectEvidence(messages).totalTurns).toBe(0)
   })
 
   test("leerer Verlauf ergibt leere Belege", () => {
-    expect(collectEvidence([])).toEqual({ turns: 0, files: [], commands: [], failures: [], lastClaim: "" })
+    expect(collectEvidence([])).toEqual({
+      turns: 0,
+      totalTurns: 0,
+      files: [],
+      commands: [],
+      failures: [],
+      lastClaim: "",
+    })
   })
 
   test("begrenzt die Zahl der Dateien", () => {
@@ -78,15 +89,62 @@ describe("collectEvidence", () => {
     const evidence = collectEvidence([assistant([{ name: "bash", input: { command: "x".repeat(500) } }])])
     expect(evidence.commands[0]!.length).toBeLessThanOrEqual(100)
   })
+
+  // Der Kern der Aktualität: bei vielen Dateien müssen die NEUESTEN gewinnen.
+  test("nimmt die neuesten Dateien, nicht die ältesten", () => {
+    const turns = Array.from({ length: 30 }, (_, i) => read(`datei-${i}.ts`))
+    const evidence = collectEvidence(turns)
+
+    expect(evidence.files).toHaveLength(12)
+    expect(evidence.files[0]).toBe("datei-29.ts")
+    expect(evidence.files).toContain("datei-18.ts")
+    expect(evidence.files).not.toContain("datei-0.ts")
+    expect(evidence.files).not.toContain("datei-17.ts")
+  })
+
+  test("nimmt die neuesten Fehlschläge", () => {
+    const turns = Array.from({ length: 12 }, (_, i) =>
+      assistant([{ name: "edit", input: { filePath: `f${i}.ts` }, status: "error", error: `fehler ${i}` }]),
+    )
+    const evidence = collectEvidence(turns)
+    expect(evidence.failures[0]!.error).toBe("fehler 11")
+    expect(evidence.failures.at(-1)!.error).toBe("fehler 6")
+  })
+
+  test("nimmt die neuesten Befehle", () => {
+    const turns = Array.from({ length: 20 }, (_, i) => assistant([{ name: "bash", input: { command: `cmd-${i}` } }]))
+    const evidence = collectEvidence(turns)
+    expect(evidence.commands[0]).toBe("cmd-19")
+    expect(evidence.commands).not.toContain("cmd-0")
+  })
+
+  test("beschränkt die Betrachtung auf das Fenster, zählt aber alles", () => {
+    const turns = Array.from({ length: 200 }, (_, i) => read(`f${i}.ts`))
+    const evidence = collectEvidence(turns)
+    expect(evidence.totalTurns).toBe(200)
+    expect(evidence.turns).toBe(40)
+    expect(evidence.files[0]).toBe("f199.ts")
+  })
+
+  test("das Fenster ist einstellbar", () => {
+    const turns = Array.from({ length: 50 }, (_, i) => read(`f${i}.ts`))
+    expect(collectEvidence(turns, 12, 8, 5).turns).toBe(5)
+  })
+
+  test("die neueste Aussage stammt aus dem Fenster, nicht von früher", () => {
+    const old = Array.from({ length: 60 }, () => assistant([], "alte Aussage"))
+    const evidence = collectEvidence([...old, assistant([], "aktuelle Aussage")])
+    expect(evidence.lastClaim).toBe("aktuelle Aussage")
+  })
 })
 
 describe("buildPrompt", () => {
-  const base = { turns: 3, files: [], commands: [], failures: [], lastClaim: "" }
+  const base = { turns: 3, totalTurns: 3, files: [], commands: [], failures: [], lastClaim: "" }
 
   test("nennt die Belege im Auftrag", () => {
     const prompt = buildPrompt({ ...base, files: ["a.ts", "b.ts"], commands: ["bun test"] })
-    expect(prompt).toContain("Angefasste Dateien: a.ts, b.ts")
-    expect(prompt).toContain("Ausgeführte Befehle: bun test")
+    expect(prompt).toContain("Zuletzt angefasste Dateien (neueste zuerst): a.ts, b.ts")
+    expect(prompt).toContain("Zuletzt ausgeführte Befehle (neueste zuerst): bun test")
   })
 
   test("listet Fehlschläge einzeln auf", () => {
@@ -108,6 +166,12 @@ describe("buildPrompt", () => {
     expect(buildPrompt(base)).toContain("Keine abgeschlossenen Arbeitsschritte")
   })
 
+  test("nennt Gesamt- und Fensterzahl der Turns", () => {
+    expect(buildPrompt({ ...base, totalTurns: 1352, turns: 40 })).toContain(
+      "Turns in dieser Session: 1352, davon betrachtet: 40",
+    )
+  })
+
   test("Fokus wird angehängt, wenn angegeben", () => {
     expect(buildPrompt(base, "Performance")).toContain("Besonderes Augenmerk: Performance")
     expect(buildPrompt(base)).not.toContain("Besonderes Augenmerk")
@@ -117,11 +181,8 @@ describe("buildPrompt", () => {
     // Ohne das gewinnt der Gesprächsverlauf gegen die Anweisung: das Modell
     // setzt den letzten Assistentensatz fort statt zu antworten.
     const prompt = buildPrompt({ ...base, files: ["a.ts"] })
-    const first = prompt.indexOf("AUFGABE")
-    const evidence = prompt.indexOf("BELEGE")
-    const last = prompt.indexOf("Das erste Zeichen")
-    expect(first).toBeLessThan(evidence)
-    expect(evidence).toBeLessThan(last)
+    expect(prompt.indexOf("AUFGABE")).toBeLessThan(prompt.indexOf("BELEGE"))
+    expect(prompt.indexOf("BELEGE")).toBeLessThan(prompt.indexOf("Das erste Zeichen"))
   })
 
   test("die letzte Aussage wird als Zitat markiert, nicht als Fliesstext", () => {
@@ -130,9 +191,8 @@ describe("buildPrompt", () => {
   })
 
   test("der Verlauf wird nicht als Beleg ausgegeben", () => {
-    // Der Belegblock führt nur Fakten auf, keine erfundenen Einträge.
     const prompt = buildPrompt(base)
-    expect(prompt).not.toContain("Angefasste Dateien")
+    expect(prompt).not.toContain("Zuletzt angefasste Dateien")
     expect(prompt).not.toContain("Fehlgeschlagene Aufrufe")
   })
 })

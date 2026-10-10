@@ -54,8 +54,8 @@ export default Plugin.define({
         let answered = ""
         let armed = true
 
-        const ask = async (focus: string | undefined, sessionID: string) => {
-          if (pending()) return
+        const ask = async (focus: string | undefined, sessionID: string): Promise<boolean> => {
+          if (pending()) return false
 
           // Eine frische Session hat serverseitig noch keine ID; `session.generate`
           // antwortet dort mit 404. In einer leeren Session gäbe es ohnehin keinen
@@ -65,7 +65,7 @@ export default Plugin.define({
               message: "Vorschläge brauchen einen Verlauf — schreib zuerst eine Nachricht",
               variant: "warning",
             })
-            return
+            return false
           }
 
           const evidence = collectEvidence(context.data.session.message.list(sessionID))
@@ -75,7 +75,7 @@ export default Plugin.define({
               message: "Keine Belege in dieser Session — kein Vorschlag ohne Grundlage",
               variant: "warning",
             })
-            return
+            return false
           }
 
           setPending(true)
@@ -88,7 +88,7 @@ export default Plugin.define({
 
             if (parsed.suggestions.length === 0) {
               toast.show({ message: "Die Belege geben keinen nächsten Schritt her", variant: "info" })
-              return
+              return true
             }
 
             if (parsed.shape !== "json") {
@@ -100,11 +100,13 @@ export default Plugin.define({
               placeholder: "Vorschlag filtern",
               options: toOptions(parsed.suggestions),
             })
-            if (!chosen) return
-
-            promptRef.current?.set({ ...emptyPrompt(), text: chosen.title })
+            if (chosen) promptRef.current?.set({ ...emptyPrompt(), text: chosen.title })
+            return true
           } catch (cause) {
             toast.error(cause)
+            // Ein Fehlschlag darf den Turn nicht als beantwortet markieren,
+            // sonst wird er nie wieder versucht.
+            return false
           } finally {
             setPending(false)
           }
@@ -136,8 +138,9 @@ export default Plugin.define({
           if (evidence.files.length + evidence.commands.length + evidence.failures.length === 0) return
 
           armed = false
-          answered = last.id
-          void ask(undefined, route.sessionID)
+          void ask(undefined, route.sessionID).then((answered_) => {
+            if (answered_) answered = last.id
+          })
         })
 
         context.keymap.layer(() => ({
