@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# opencode-fork — startet die TUI dieses Forks.
+#
+# Anders als `opencode` laeuft dies aus dem Quellbaum und verbindet sich mit dem
+# laufenden Hintergrunddienst, damit deine bestehenden Sessions sichtbar sind.
+# Das installierte opencode wird dabei nicht angefasst.
+
+set -euo pipefail
+
+REPO="${OPENCODE_FORK_REPO:-/home/scalyxsoft/Documents/coding/opencode-fork}"
+
+if [[ ! -d "$REPO/.git" ]]; then
+  echo "opencode-fork: kein Repository unter $REPO" >&2
+  echo "  Setze OPENCODE_FORK_REPO auf den richtigen Pfad." >&2
+  exit 1
+fi
+
+# bun liegt nicht in jeder Shell im PATH.
+if ! command -v bun >/dev/null 2>&1; then
+  if [[ -x "$HOME/.bun/bin/bun" ]]; then
+    export PATH="$HOME/.bun/bin:$PATH"
+  else
+    echo "opencode-fork: bun nicht gefunden." >&2
+    echo "  Installieren mit: curl -fsSL https://bun.sh/install | bash" >&2
+    exit 1
+  fi
+fi
+
+cd "$REPO"
+
+if [[ ! -d node_modules ]]; then
+  echo "opencode-fork: Abhaengigkeiten fehlen, installiere sie einmalig…" >&2
+  bun install
+fi
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+DIRTY=""
+if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+  DIRTY=" *"
+fi
+
+case "${1:-}" in
+  -h|--help)
+    cat <<'HELP'
+opencode-fork — TUI dieses opencode-Forks starten
+
+NUTZUNG
+  opencode-fork [verzeichnis]        TUI im angegebenen Verzeichnis starten
+  opencode-fork --standalone         private Serverinstanz statt des Dienstes
+  opencode-fork --story <id>         eine Storybook-Story oeffnen
+  opencode-fork --branch             aktiven Branch anzeigen
+  opencode-fork --check              Lint und Typecheck ueber das Repo
+
+STORYBOOK-IDS
+  context-pulse    Kontextverlauf, Feststurz-Warnung, Prognose
+  session-cost     Kosten- und Token-Aufschluesselung
+
+BEISPIELE
+  opencode-fork
+  opencode-fork ~/Documents/coding/mein-projekt
+  opencode-fork --story context-pulse
+HELP
+    exit 0
+    ;;
+
+  --branch)
+    echo "$BRANCH$DIRTY"
+    exit 0
+    ;;
+
+  --check)
+    exec bun run check
+    ;;
+
+  --story)
+    if [[ -z "${2:-}" ]]; then
+      echo "opencode-fork: --story braucht eine ID (context-pulse, session-cost)" >&2
+      exit 1
+    fi
+    echo "opencode-fork: Story \"$2\" auf Branch $BRANCH$DIRTY"
+    export OPENCODE_STORY="$2"
+    shift 2
+    exec bun run dev:live "$@"
+    ;;
+
+  --standalone)
+    shift
+    echo "opencode-fork: private Serverinstanz auf Branch $BRANCH$DIRTY"
+    exec bun --cwd packages/cli run src/index.ts --standalone "$@"
+    ;;
+esac
+
+echo "opencode-fork: Branch $BRANCH$DIRTY"
+exec bun run dev:live "$@"
