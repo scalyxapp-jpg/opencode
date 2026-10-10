@@ -270,6 +270,7 @@ function buildPrompt(evidence, focus) {
     '5. Mindestens zwei sind "Erweitern"; ab sieben Vorschlägen mindestens ein Drittel. Sie dürfen über den bisherigen Faden hinausdenken, solange sie an die Belege anknüpfen.',
     '6. Höchstens einer ist "Fortsetzen" und höchstens einer ist "Absichern"; ab acht Vorschlägen höchstens zwei. Alles Übrige ist "Vertiefen".',
     "7. Wenn die Belege keinen sinnvollen Schritt hergeben, gib ein leeres Array zurück.",
+    'Jeder Vorschlag ist technische Arbeit am Code oder am Projekt: bauen, umbauen, prüfen, verstehen. Rein Organisatorisches ist kein Vorschlag — kein "git commit", kein "push", kein Release, kein Changelog, kein Ticket, kein Termin.',
     focus ? `8. Besonderes Augenmerk: ${focus}` : "",
     "",
     "BELEGE (nur diese, keine Annahmen darüber hinaus):",
@@ -506,6 +507,24 @@ function taskContext(evidence, extra) {
   if (evidence.signals.length) lines.push(`- Beobachtete Lücken: ${evidence.signals.join("; ")}`)
   for (const line of extra ?? []) lines.push(`- ${line}`)
   return lines.join("\n")
+}
+
+/**
+ * Rein organisatorische Vorschlaege fliegen raus.
+ *
+ * Vorschlaege sollen technische Arbeit am Code oder am Projekt sein. Ein
+ * "git commit und push" ist keine Arbeit am Vorhaben, sondern Verwaltung.
+ */
+const ADMIN_HINT =
+  /\b(git|commit|committen|push|pushen|pull[- ]?request|merge[- ]?request|mergen|rebase|branch(es)?|branchen|release|released|veröffentlichen|publish|semver|version bump|versionsnummer|changelog|backup|sicherung anlegen|ticket|issue anlegen|jira|board|meeting|termin|protokoll|abnahme|freigabe|statusbericht|einreichen|abstimmen|besprechen)\b/i
+
+function technicalOnly(suggestions, evidence) {
+  const kept = suggestions.filter(
+    (suggestion) => !ADMIN_HINT.test(`${suggestion?.title ?? ""} ${suggestion?.detail ?? ""}`),
+  )
+  if (kept.length) return kept
+  // Bleibt nur Verwaltung uebrig, ist die Session die bessere Quelle.
+  return suggestions.length ? fallbackSuggestions(evidence) : suggestions
 }
 
 /**
@@ -1101,6 +1120,7 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     "Die technische Einordnung ist abgeleitet, nicht geraten — baue deine Vorschläge darauf auf: nenne den Stand, den du dort findest, und knüpfe an das an, was schon gebaut ist.",
     "Die Liste der gebauten Merkmale zeigt bestehende Bausteine mit ihren öffentlichen Namen. Jeder Vorschlag soll den Baustein benennen, an den er anknüpft — notfalls über den Pfad.",
     "Was in der Einordnung als fehlend steht, ist ein belegter Anknüpfungspunkt, aber nicht automatisch ein Vorschlag.",
+    'Jeder Vorschlag ist technische Arbeit am Code oder am Projekt: bauen, umbauen, prüfen, verstehen. Rein Organisatorisches ist kein Vorschlag — kein "git commit", kein "push", kein Release, kein Changelog, kein Ticket, kein Termin.',
     "Wenn das Projekt zu wenig hergibt, liefere weniger Vorschläge statt geratener.",
     focus ? `Besonderes Augenmerk: ${focus}` : "",
     "",
@@ -1366,9 +1386,12 @@ export default {
         // Zweite, belegbasierte Bremse: das Modell darf sich an der Obergrenze
         // nicht vorbeireden. Bei mehr Vorschlägen als die Session trägt, fliegt
         // der Rest hier raus.
-        const suggestions = generated
-          ? parseSuggestions(generated?.text ?? generated).slice(0, suggestionBudget(evidence))
-          : fallbackSuggestions(evidence)
+        const suggestions = technicalOnly(
+          generated
+            ? parseSuggestions(generated?.text ?? generated).slice(0, suggestionBudget(evidence))
+            : fallbackSuggestions(evidence),
+          evidence,
+        )
 
         if (!suggestions.length) {
           toast("Die Belege geben keinen nächsten Schritt her", "info")
@@ -1505,7 +1528,7 @@ export default {
 
         const report = generated ? parseProjectReport(generated?.text ?? generated) : { summary: "", suggestions: [] }
         const suggestions = ensureAreaSuggestions(
-          report.suggestions.length ? report.suggestions : projectFallback(files, evidence),
+          technicalOnly(report.suggestions.length ? report.suggestions : projectFallback(files, evidence), evidence),
           analysis.areas,
           suggestionBudget(evidence),
         ).slice(0, MAX_SUGGESTIONS)
