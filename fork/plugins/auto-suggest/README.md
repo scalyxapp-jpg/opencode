@@ -209,6 +209,17 @@ Gezeigt heisst gemerkt: die Titel wandern erst dann in die Ablage
 (`plugin.auto-suggest.asked.json`, je Sitzung und je Projektverzeichnis, die
 letzten 80 Titel), wenn das Formular stehen bleibt.
 
+**Prosa ist keine Vorschlagsliste.** Antwortet das Modell mit einem Absatz statt
+mit dem verlangten JSON — etwa weil es den Auftrag als Gesprächsbeitrag liest —,
+wird daraus **kein** Vorschlag: eine Prüfung `looksLikeTask` verwirft alles, was
+zu lang ist, mehrere Sätze hat, Code oder Anrede enthält, eine Frage ist oder wie
+ein Listenzeichen beginnt. Was übrig bleibt, ist ein echter Titel. Ohne diese
+Prüfung wären Sätze wie „Ich sehe im Prompt zwei Dinge …" als Vorschlag im
+Formular gelandet — und als „bereits vorgeschlagen" in der Sperrliste, wo sie dem
+Modell beim nächsten Mal vor der Nase stehen. Alte Ablagen werden dabei
+mitgereinigt: beim Lesen fällt heraus, was kein Titel ist, und der nächste
+Schreibvorgang lässt es verschwinden.
+
 **Ein Lauf endet nie ohne Vorschläge.** Das Modell wird nicht nur gebeten,
 sondern verpflichtet: eine leere Liste ist im Auftrag ausdrücklich ungültig, und
 statt weniger zu liefern soll es tiefer in dieselbe Ablage gehen (anderer
@@ -384,12 +395,12 @@ ok   1-evidence.mjs  27 bestanden, 0 fehlgeschlagen
 ok   2-budget.mjs    49 bestanden, 0 fehlgeschlagen
 ok   3-forms.mjs     30 bestanden, 0 fehlgeschlagen
 ok   4-flow.mjs      88 bestanden, 0 fehlgeschlagen
-ok   5-answers.mjs   16 bestanden, 0 fehlgeschlagen
+ok   5-answers.mjs   30 bestanden, 0 fehlgeschlagen
 ok   6-areas.mjs     54 bestanden, 0 fehlgeschlagen
 ok   7-report.mjs    58 bestanden, 0 fehlgeschlagen
 ok   8-repeats.mjs   55 bestanden, 0 fehlgeschlagen
 
-Summe: 377 bestanden, 0 fehlgeschlagen in 8 Suiten
+Summe: 391 bestanden, 0 fehlgeschlagen in 8 Suiten
 ```
 
 | Suite            | Prüft                                                                                                                  |
@@ -398,7 +409,7 @@ Summe: 377 bestanden, 0 fehlgeschlagen in 8 Suiten
 | `2-budget.mjs`   | Anzahl und Regeln der Vorschläge, Parser, Duplikate                                                                    |
 | `3-forms.mjs`    | Formular-Lebenszyklus, Warten auf die Auswahl, Auftragszuschnitt                                                       |
 | `4-flow.mjs`     | `setup()` gegen einen Fake-Server: nichts passiert von selbst, ein Formular, eine Absendung, Wache, keine Wiederholung |
-| `5-answers.mjs`  | Antworten, wie Modelle sie wirklich schicken: Codezäune, Prosa, abgebrochene Arrays, Maskierung                        |
+| `5-answers.mjs`  | Antworten, wie Modelle sie wirklich schicken: Codezäune, Prosa (wird verworfen), abgebrochene Arrays, Maskierung       |
 | `6-areas.mjs`    | Bereichsfilter (`/nextProject Gui`), Pflichtbereiche, Rückfall                                                         |
 | `7-report.mjs`   | Zwischenspeicher des Projektberichts: Frist, Baumkennzeichen, Abdeckung, sichtbarer Stand, nur Neues aus dem Bericht   |
 | `8-repeats.mjs`  | Wiederholungssperre: Titelvergleich, was dem Modell gesagt wird, der Vorrat aus der Ablage (nie ein leerer Lauf)       |

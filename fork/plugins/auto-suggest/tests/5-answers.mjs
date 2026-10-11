@@ -14,10 +14,10 @@ const STAGED = join(tmpdir(), `auto-suggest-5-answers-${process.pid}.mjs`)
 
 writeFileSync(
   STAGED,
-  readFileSync(SOURCE, "utf8") + "\nexport { parseSuggestions, salvageSuggestions, toSuggestion }\n",
+  readFileSync(SOURCE, "utf8") + "\nexport { parseSuggestions, salvageSuggestions, toSuggestion, looksLikeTask }\n",
 )
 
-const { parseSuggestions, salvageSuggestions, toSuggestion } = await import(STAGED + "?t=" + Date.now())
+const { parseSuggestions, salvageSuggestions, toSuggestion, looksLikeTask } = await import(STAGED + "?t=" + Date.now())
 
 let pass = 0
 let fail = 0
@@ -91,6 +91,48 @@ check("einzelner Rohtext bleibt ein Eintrag", parseSuggestions("Mach irgendwas")
 // 10. toSuggestion raeumt Muell weg.
 check("ohne Titel kein Eintrag", toSuggestion({ detail: "d" }) === undefined)
 check("Nicht-Objekt kein Eintrag", toSuggestion(7) === undefined)
+
+console.log("")
+console.log("Prosa ist keine Vorschlagsliste")
+// Die beiden Texte standen wirklich so in der Ablage: das Modell hat den
+// Auftrag als Gesprächsbeitrag gelesen und geantwortet, statt JSON zu liefern.
+const proseOne =
+  "Du hast mir den erzeugten Auftrag geschickt. Ich prüfe erst, was davon in der Sitzung landet und wie die Belege zustande kommen."
+const proseTwo =
+  "Ich sehe in dem Prompt zwei Dinge: die neue Fassung ist live — und in `BEREITS VORGESCHLAGEN` steht **Müll**:\n\n```\n- Du hast mir den erzeugten Auftrag geschickt\n```"
+check(
+  "der erste Prosatext ergibt keinen Vorschlag",
+  parseSuggestions(proseOne).length === 0,
+  JSON.stringify(parseSuggestions(proseOne).map((i) => i.title)),
+)
+check(
+  "der zweite Prosatext ebenso",
+  parseSuggestions(proseTwo).length === 0,
+  JSON.stringify(parseSuggestions(proseTwo).map((i) => i.title)),
+)
+check("ein Absatz als Zeichenkette faellt weg", toSuggestion(proseOne) === undefined)
+check("ein Absatz als Objekt ebenso", toSuggestion({ title: proseOne, detail: "x" }) === undefined)
+check(
+  "ein Prosapunkt in einer Liste faellt weg",
+  parseSuggestions(`- ${proseOne}\n- ${proseTwo}\n- Noch ein Satz. Und ein zweiter.`).length === 0,
+)
+check(
+  "eine Liste aus echten Arbeiten bleibt",
+  parseSuggestions("- Erweitern — Neue Ansicht für Profile\n- Vertiefen — Module trennen").length === 2,
+)
+check("ein kurzer Satz bleibt ein Titel", parseSuggestions("Datenbankabfragen bündeln").length === 1)
+check("Rueckfrage an den Leser faellt weg", looksLikeTask("Was möchtest du als Nächstes tun?") === false)
+check("Anrede faellt weg", looksLikeTask("Hier sind meine Vorschläge:") === false)
+check("Code im Titel faellt weg", looksLikeTask("Aendere `src/a.ts`") === false)
+check(
+  "langer Titel faellt weg",
+  looksLikeTask(
+    "Ein sehr langer Titel, der mehr als hundert Zeichen hat und damit kein Titel mehr ist, sondern ein ganzer Absatz mit vielen Worten",
+  ) === false,
+)
+check("ein echter Titel bleibt", looksLikeTask("Tests für src/a.ts nachziehen") === true)
+check("die Vorlage eines Pflichtbereichs bleibt", looksLikeTask("Oberfläche um einen Bedienweg erweitern") === true)
+check("ein abgeleiteter Vorschlag bleibt", looksLikeTask('Aufruf "bun test src" in die Prüfung aufnehmen') === true)
 
 console.log("")
 console.log(`${pass} bestanden, ${fail} fehlgeschlagen`)

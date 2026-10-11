@@ -486,6 +486,29 @@ function freshSuggestions(suggestions, seen) {
 }
 
 /**
+ * Taugt der Text als Titel eines Vorschlags?
+ *
+ * Modelle antworten mitunter mit Prosa statt mit dem verlangten JSON — etwa
+ * weil sie den Auftrag als Gespraechsbeitrag lesen. Aus einem Absatz wird dann
+ * ein "Vorschlag", der keiner ist, und der landet im Formular und in der Liste
+ * des Schon-gefragt. Solche Texte fallen hier heraus: zu lang, mehrere Saetze,
+ * Code, Anrede an den Leser.
+ */
+const TITLE_META = /^(ich|du|wir|man|hier|dies|dieser|diese|es|das ist|sie|er|was|wie|warum|wer)\b/i
+function looksLikeTask(text) {
+  const value = String(text ?? "").trim()
+  if (!value) return false
+  if (value.length > 100) return false
+  if (/```|`|\?/.test(value)) return false
+  if (/[\r\n]/.test(value)) return false
+  if (TITLE_META.test(value)) return false
+  if ((value.match(/[.!?](?=\s|$)/g) ?? []).length > 1) return false
+  if (/^\s*[-*•]/.test(value)) return false
+  if (value.endsWith(":") || value.endsWith("…") || value.endsWith("...")) return false
+  return true
+}
+
+/**
  * Was je Datei an Arbeit denkbar ist.
  *
  * Der Vorrat fuer den Fall, dass das Modell nur Bekanntes liefert: der Lauf darf
@@ -665,19 +688,20 @@ function askedBlock(seen) {
 function strictReminder() {
   return [
     "",
-    "ACHTUNG: Deine Liste enthielt nur Vorschläge, die oben unter BEREITS VORGESCHLAGEN stehen.",
-    "Das ist keine gültige Antwort. Liefere jetzt ausschließlich andere Arbeiten — andere Bausteine, andere Dateien,",
-    "andere Anwendungsfälle, andere Aspekte derselben Sache. Eine leere Liste ist ebenso ungültig wie eine Wiederholung.",
+    "ACHTUNG: Deine vorige Antwort war keine gültige Vorschlagsliste — sie bestand aus Prosa oder nur aus Bekanntem.",
+    "Antworte jetzt ausschließlich mit dem JSON-Array, ohne Einleitung, ohne Erklärung, ohne Codezaun:",
+    'das erste Zeichen ist [ und das letzte ]. Jeder Eintrag ist {"kind","title","detail","prompt"} mit einer',
+    "Arbeit, die oben unter BEREITS VORGESCHLAGEN nicht steht. Eine leere Liste ist ebenso ungültig wie eine Wiederholung.",
   ].join("\n")
 }
 
 /** Drei Stufen, weil Modelle sich nicht zuverlässig an ein Format halten. */
 function toSuggestion(item) {
   if (typeof item === "string")
-    return item.trim() ? { title: clip(item.trim(), 120), detail: "", prompt: "" } : undefined
+    return item.trim() && looksLikeTask(item) ? { title: clip(item.trim(), 120), detail: "", prompt: "" } : undefined
   if (!item || typeof item !== "object") return undefined
   const title = String(item.title ?? item.name ?? item.step ?? item.titel ?? "").trim()
-  if (!title) return undefined
+  if (!title || !looksLikeTask(title)) return undefined
   const kind = kindOf(item.kind ?? item.lens ?? item.group ?? item.art ?? item.richtung)
   const detail = String(item.detail ?? item.reason ?? item.why ?? item.details ?? item.begruendung ?? "").trim()
   const prompt = String(item.prompt ?? item.task ?? item.auftrag ?? "").trim()
@@ -774,7 +798,7 @@ function parseSuggestions(raw) {
   const listed = text
     .split("\n")
     .map((line) => /^\s*(?:[-*]|\d+[.)])\s+(.*)$/.exec(line)?.[1]?.trim() ?? "")
-    .filter(Boolean)
+    .filter((line) => looksLikeTask(line))
   if (listed.length >= 2) {
     const items = listed.map((line) => {
       const split = /^(.*?)\s*[—–:]\s+(.*)$/.exec(line)
@@ -795,6 +819,10 @@ function parseSuggestions(raw) {
   const salvaged = salvageSuggestions(text)
   if (salvaged.length) return salvaged
 
+  // Prosa ist keine Vorschlagsliste. Ein einzelner kurzer Satz darf noch als
+  // Titel durchgehen, ein Absatz nicht — daraus wuerde ein Vorschlag, den
+  // niemand vorgeschlagen hat.
+  if (!looksLikeTask(text)) return []
   return normalizeSuggestions([{ title: clip(text, 120), detail: "" }])
 }
 
@@ -2517,18 +2545,29 @@ export default {
       /* ohne Ablage wird eben nichts gemerkt: dann kann es Wiederholungen geben */
     }
 
-    /** Alle Titel, die in diesen Schluesseln schon gezeigt wurden. */
+    /**
+     * Alle Titel, die in diesen Schluesseln schon gezeigt wurden.
+     *
+     * Alte Ablagen koennen Prosa enthalten, die frueher einmal als Vorschlag
+     * durchging. Was kein Titel ist, wird hier aussortiert — sonst stuende es
+     * dem Modell als "BEREITS VORGESCHLAGEN" vor der Nase.
+     */
     const askedFor = (keys) => {
       const titles = []
       for (const key of keys) {
-        for (const title of readAsked?.(key) ?? []) if (!titles.includes(title)) titles.push(title)
+        for (const title of readAsked?.(key) ?? []) {
+          if (!looksLikeTask(title)) continue
+          if (!titles.includes(title)) titles.push(title)
+        }
       }
       return titles
     }
 
     /** Die gezeigten Titel merken — je Sitzung und je Projektverzeichnis. */
     const rememberAsked = (keys, suggestions) => {
-      const titles = (suggestions ?? []).map((suggestion) => String(suggestion?.title ?? "").trim()).filter(Boolean)
+      const titles = (suggestions ?? [])
+        .map((suggestion) => String(suggestion?.title ?? "").trim())
+        .filter((title) => title && looksLikeTask(title))
       if (!writeAsked || !titles.length) return
       for (const key of keys) {
         const merged = [...askedFor([key])]
