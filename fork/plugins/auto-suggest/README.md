@@ -20,7 +20,11 @@ dieselbe Datei auch als Server-Plugin geladen und der Befehl erscheint nie.
 ```
 /next              Vorschläge anfragen
 /next <fokus>      mit besonderem Augenmerk
+/next <Bereich>    nur dieser Bereich
 ```
+
+Auch `/next` versteht das Bereichsargument als Filter (`/next Tests`). Die
+Bereiche stehen bei `/nextProject` beschrieben.
 
 Die Vorschläge erscheinen als **Formular inline im Verlauf** — dieselbe
 Darstellung wie eine Frage des question-Tools, mit nummerierter Liste, Kästchen
@@ -94,7 +98,40 @@ oberster Ebene. Anders gelesen scheitert der Aufruf mit
 ```
 /nextProject              Vorschläge aus dem ganzen Projekt
 /nextProject <fokus>      mit besonderem Augenmerk
+/nextProject <Bereich>    nur dieser Bereich
 ```
+
+**Das Argument als Filter.** Nennt das Argument einen Bereich, wird es zum
+strengen Filter — es kommen ausschließlich Vorschläge dieses Bereichs:
+
+```
+/nextProject Gui          nur Oberfläche
+/nextProject Tests        nur Tests
+/nextProject gui, tests   nur Oberfläche und Tests
+/nextProject Barrierefreiheit   freier Hinweis wie bisher
+```
+
+Erkannt werden Schlüssel, Beschriftung und Umgangssprache: `Gui`, `UI`,
+`Oberfläche`, `Ansicht`, `Architektur`, `Struktur`, `API`, `Server`, `CLI`,
+`Kommandozeile`, `Daten`, `Schema`, `Plugins`, `Tests`, `Doku`, `CI`, `i18n`,
+`Mobile`, `Desktop`, `Spiel`. `alle` hebt den Filter auf.
+
+Damit der Filter hält, greifen drei Stellen zusammen:
+
+1. **Der Auftrag** ersetzt die Regel zu den Pflichtbereichen durch die
+   Bereichsangabe und verlangt im JSON zusätzlich ein `area`-Feld.
+2. **`selectAreas`** gibt nur die gefragten Bereiche weiter. Sonst würde die
+   Pflichtregel für Oberfläche und Architektur einen fremden Vorschlag
+   erzwingen und den Filter aushebeln.
+3. **`filterByAreas`** wirft danach alles weg, was nicht dazugehört. Ein
+   gesetztes `area`-Feld entscheidet; fehlt es oder ist es unbekannt, wird im
+   Text gesucht (kurze Wörter wie `cli` nur an der Wortgrenze, damit `Client`
+   nicht als Kommandozeile durchgeht).
+
+Ein gefilterter Lauf fragt höchstens fünf Vorschläge ab — mehr wären
+Wiederholungen mit anderem Wortlaut. Liefert das Modell zum Bereich nichts,
+bleibt ein Vorschlag aus dem Bereich selbst (`areaFallback`); ein fremder
+Vorschlag wäre die falsche Antwort auf die Frage.
 
 Liest das Projekt ab dem Verzeichnis der Session — verzeichnisweise, ohne
 `node_modules`, `.git`, `dist` und Ähnliches, ohne Binärdateien, begrenzt auf

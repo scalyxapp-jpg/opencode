@@ -47,6 +47,10 @@ const MAX_ASKS = 4
 const MIN_SUGGESTIONS = 3
 const MAX_SUGGESTIONS = 10
 
+// Ein gefilterter Lauf fragt nur einen einzigen Bereich ab. Mehr als eine Handvoll
+// Vorschlaege dazu waeren Wiederholungen mit anderem Wortlaut.
+const FILTER_SUGGESTIONS = 5
+
 const FILE_TOOLS = new Set(["read", "edit", "write", "patch", "glob", "grep"])
 const WRITE_TOOLS = new Set(["edit", "write", "patch"])
 const SHELL_TOOLS = new Set(["bash", "shell"])
@@ -220,8 +224,10 @@ function collectEvidence(messages) {
 
 /** Auftrag samt Belegblock. Die Anweisung steht vorne und wird hinten wiederholt. */
 function buildPrompt(evidence, focus) {
-  const budget = suggestionBudget(evidence)
+  const { hint, areas } = focusParts(focus)
+  const budget = areas.length ? Math.min(suggestionBudget(evidence), FILTER_SUGGESTIONS) : suggestionBudget(evidence)
   const band = budget === MIN_SUGGESTIONS ? `${MIN_SUGGESTIONS}` : `${MIN_SUGGESTIONS} bis ${budget}`
+  const scope = areas.length ? areas.map((area) => `${area.label} (area "${area.key}")`).join(", ") : ""
 
   const lines = [`Erkannter Arbeitsmodus: ${evidence.mode}`]
   lines.push(`Turns in dieser Session: ${evidence.totalTurns}, davon betrachtet: ${evidence.turns}`)
@@ -274,12 +280,20 @@ function buildPrompt(evidence, focus) {
     'Ein "Erweitern"-Vorschlag ist ein vollständiges Feature, kein Detail: eine neue Funktion, eine neue Ansicht, ein neuer Modus, ein neuer Befehl, eine neue Auswertung, eine neue Automatik oder ein neuer Anwendungsfall.',
     "Er nennt den Nutzen in einem Satz, den Weg dorthin (wo im Code es ansetzt) und was neu entsteht. Im `prompt` steht das Feature als Ganzes, nicht sein erster Handgriff.",
     'Jeder "Erweitern"-Vorschlag verbessert die Nutzung: weniger Schritte, klarere Rückmeldung oder mehr Möglichkeiten als heute. Ein Erweitern-Vorschlag, der nur umbenennt, umsortiert oder aufräumt, ist keiner.',
-    focus ? `8. Besonderes Augenmerk: ${focus}` : "",
+    scope
+      ? `8. Es kommt ausschließlich zu diesen Bereichen: ${scope}. Jeder Vorschlag gehört zu einem davon; alles andere ist falsch.${hint ? ` Zusätzlich im Blick: ${hint}` : ""}`
+      : hint
+        ? `8. Besonderes Augenmerk: ${hint}`
+        : "",
     "",
     "BELEGE (nur diese, keine Annahmen darüber hinaus):",
     lines.join("\n"),
     "",
-    'Antworte jetzt ausschließlich mit einem JSON-Array der Form [{"kind":"…","title":"…","detail":"…","prompt":"…"}].',
+    scope
+      ? 'Antworte jetzt ausschließlich mit einem JSON-Array der Form [{"kind":"…","title":"…","detail":"…","prompt":"…","area":"…"}]. `area` ist einer dieser Schlüssel: ' +
+        areas.map((area) => `"${area.key}"`).join(", ") +
+        "."
+      : 'Antworte jetzt ausschließlich mit einem JSON-Array der Form [{"kind":"…","title":"…","detail":"…","prompt":"…"}].',
     "`kind` ist einer der vier Werte. `title` ist die Arbeit in wenigen Worten, `detail` begründet sie aus den Belegen.",
     "`prompt` ist der fertige Auftrag, der später wortgleich in den Chat geht — mehrere Sätze, für sich verständlich, ohne Bezug auf dieses Menü.",
     "Er nennt Ziel und Ergebnis, die betroffenen Dateien aus den Belegen, den nötigen Zusammenhang und woran man erkennt, dass die Arbeit fertig ist.",
@@ -1121,6 +1135,155 @@ const AREA_TEMPLATES = {
 }
 
 /**
+ * Worte, mit denen ein Bereich im Argument erkannt wird.
+ *
+ * Der Schluessel allein genuegt nicht: getippt wird "Gui", "Tests" oder
+ * "Oberfläche", nicht "gui". Deshalb steht neben dem Schluessel die
+ * Beschriftung und das, was umgangssprachlich gemeint ist.
+ */
+const AREA_SYNONYMS = {
+  gui: [
+    "gui",
+    "ui",
+    "oberflaeche",
+    "oberfläche",
+    "ansicht",
+    "ansichten",
+    "bedienung",
+    "interface",
+    "frontend",
+    "fenster",
+  ],
+  architecture: ["architektur", "struktur", "aufbau", "schicht", "schichten", "modul", "module", "baustein", "grenzen"],
+  api: ["api", "server", "backend", "endpunkt", "endpunkte", "route", "routes"],
+  cli: ["cli", "kommandozeile", "konsole", "terminal", "befehl", "befehle"],
+  data: ["daten", "datenbank", "schema", "schemas", "migration", "migrationen", "modell", "modelle"],
+  plugins: ["plugin", "plugins", "erweiterung", "erweiterungen"],
+  tests: ["test", "tests", "testing", "pruefung", "pruefungen", "abdeckung", "regression"],
+  docs: ["doku", "dokumentation", "docs", "readme", "handbuch"],
+  ci: ["ci", "automatisierung", "pipeline", "pipelines", "workflow", "workflows"],
+  i18n: ["i18n", "uebersetzung", "uebersetzungen", "übersetzung", "übersetzungen", "sprache", "sprachen"],
+  mobile: ["mobile", "android", "ios"],
+  desktop: ["desktop", "electron", "tauri"],
+  game: ["spiel", "game", "level", "levels", "szene", "szenen"],
+}
+
+/**
+ * Liest das Argument als Bereichsangabe.
+ *
+ * "Gui" ist kein Bereichsschluessel, sondern ein Wort — gesucht wird deshalb
+ * ueber Schluessel, Beschriftung und Synonyme. Erkannte Woerter werden zum
+ * Filter, alles Uebrige bleibt Hinweis. Findet sich kein Bereich, bleibt das
+ * ganze Argument reiner Hinweis wie bisher. "alle" hebt den Filter auf.
+ */
+function focusParts(focus) {
+  if (focus && typeof focus === "object") return { hint: String(focus.hint ?? ""), areas: focus.areas ?? [] }
+
+  const raw = String(focus ?? "").trim()
+  if (!raw) return { hint: "", areas: [] }
+
+  // Kleingeschrieben wird nur zum Vergleichen; im Text bleibt die Schreibweise
+  // des Nutzers stehen.
+  const tokens = raw.split(/[,;/|]|\s+/).filter(Boolean)
+  const words = tokens.map((token) => token.toLowerCase().replace(/[^a-z0-9äöüß-]/g, ""))
+  if (words.some((word) => ["alle", "alles", "*"].includes(word))) return { hint: "", areas: [] }
+
+  const areas = []
+  const rest = []
+  for (const [index, token] of tokens.entries()) {
+    const word = words[index]
+    const area = word
+      ? PROJECT_AREAS.find(
+          (candidate) => candidate.key.toLowerCase() === word || (AREA_SYNONYMS[candidate.key] ?? []).includes(word),
+        )
+      : undefined
+    if (!area) {
+      rest.push(token)
+      continue
+    }
+    if (!areas.some((known) => known.key === area.key)) areas.push(area)
+  }
+  return { hint: areas.length ? rest.join(" ") : raw, areas }
+}
+
+/** Worte, die einen Vorschlag einem Bereich zuordnen. */
+const AREA_STOP_WORDS = new Set(["und", "der", "die", "das", "für", "fuer", "mit", "von", "den"])
+function areaWords(area) {
+  return [area.key, area.label, ...(AREA_SYNONYMS[area.key] ?? [])]
+    .flatMap((word) =>
+      String(word ?? "")
+        .toLowerCase()
+        .split(/[^a-z0-9äöüß]+/),
+    )
+    .filter((word) => word.length >= 3 && !AREA_STOP_WORDS.has(word))
+}
+
+/** Trifft ein Bereichswort im Text? Kurze Worte nur an der Wortgrenze, sonst reicht "enthalten". */
+function mentionsArea(text, words) {
+  return words.some((word) =>
+    word.length >= 5 ? text.includes(word) : new RegExp(`(^|[^a-zäöüß])${word}(s|en|e)?([^a-zäöüß]|$)`).test(text),
+  )
+}
+
+/**
+ * Behaelt nur Vorschlaege der gefragten Bereiche.
+ *
+ * Zuerst zaehlt das Feld `area`, das das Modell setzen soll. Fehlt es, wird im
+ * Text gesucht — sonst fiele ein passender Vorschlag heraus, nur weil das
+ * Modell das Feld vergessen hat.
+ */
+/**
+ * Behaelt nur Vorschlaege der gefragten Bereiche.
+ *
+ * Ein gesetzter `area`-Schluessel entscheidet: das Modell soll ihn setzen, und
+ * wer ihn setzt, wird beim Wort genommen. Nur wenn er fehlt oder unbekannt ist,
+ * wird im Text gesucht — sonst fiele ein passender Vorschlag heraus, nur weil
+ * das Feld fehlt.
+ */
+function filterByAreas(suggestions, areas) {
+  if (!areas.length) return suggestions
+  const keys = new Set(areas.map((area) => area.key))
+  const words = areas.flatMap(areaWords)
+  return suggestions.filter((suggestion) => {
+    const declared = suggestion?.area
+    if (declared && PROJECT_AREAS.some((area) => area.key === declared)) return keys.has(declared)
+    return mentionsArea(`${suggestion?.title ?? ""} ${suggestion?.detail ?? ""}`.toLowerCase(), words)
+  })
+}
+
+/** Letzter Halt, wenn das Modell zum gefragten Bereich gar nichts geliefert hat. */
+function areaFallback(area) {
+  const where = (area.samples ?? []).slice(0, 3).join(", ")
+  return {
+    area: area.key,
+    title: `${area.label}: nächsten Schritt ausbauen`,
+    detail: withKind(
+      "Erweitern",
+      `${area.label} ist im Projekt${where ? ` an ${where}` : ""} zu erkennen. Der nächste Schritt erweitert genau diesen Teil.`,
+    ),
+    prompt: "",
+  }
+}
+
+/**
+ * Die Bereiche, auf die sich die Vorschlaege stuetzen duerfen.
+ *
+ * Ohne Filter kommen die erkannten Bereiche plus die Pflichtbereiche. Mit
+ * Filter zaehlen ausschliesslich die gefragten Bereiche — sonst wuerde die
+ * Pflichtregel fuer Oberflaeche und Architektur einen fremden Vorschlag
+ * erzwingen und den Filter aushebeln.
+ */
+function selectAreas(detected, files, wanted) {
+  if (!wanted.length) return ensureCoreAreas(detected, files)
+  const keys = new Set(wanted)
+  return ensureCoreAreas(
+    detected.filter((area) => keys.has(area.key)),
+    files,
+    wanted,
+  )
+}
+
+/**
  * Die beiden Kernbereiche gelten immer.
  *
  * Oberflaeche und Architektur sind die Bereiche, die ein Projekt am meisten
@@ -1129,9 +1292,9 @@ const AREA_TEMPLATES = {
  * `packages/`). Deshalb werden sie ergaenzt, wenn die Erkennung sie nicht
  * findet; als Belege dienen dann die sprechendsten vorhandenen Dateien.
  */
-function ensureCoreAreas(areas, files) {
+function ensureCoreAreas(areas, files, required = ["gui", "architecture"]) {
   const result = [...areas]
-  for (const key of ["gui", "architecture"]) {
+  for (const key of required) {
     if (result.some((area) => area.key === key)) continue
     const definition = PROJECT_AREAS.find((area) => area.key === key)
     if (!definition) continue
@@ -1183,7 +1346,7 @@ function ensureAreaSuggestions(suggestions, areas, budget) {
     guaranteed.push({
       area: area.key,
       title: template.title,
-      detail: withKind(template.kind, `${template.lead} ${area.samples.join(", ")}. ${template.tail}`),
+      detail: withKind(template.kind, `${template.lead} ${(area.samples ?? []).join(", ")}. ${template.tail}`),
       prompt: "",
     })
   }
@@ -1196,6 +1359,8 @@ function ensureAreaSuggestions(suggestions, areas, budget) {
 }
 
 function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
+  const { hint, areas } = focusParts(focus)
+  const scope = areas.length ? areas.map((area) => `${area.label} (area "${area.key}")`).join(", ") : ""
   const size = limits ?? PROJECT_LIMITS
   return [
     "AUFGABE: Verschaffe dir einen Überblick über dieses Projekt und schlage danach die nächsten Arbeiten vor.",
@@ -1204,7 +1369,9 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     "`suggestions` ist ein Array mit höchstens " +
       MAX_SUGGESTIONS +
       " Einträgen, jeweils {kind, title, detail, prompt, area}.",
-    `Pflichtregel zu den Bereichen: Für jeden Bereich, der unten als Pflichtvorschlag steht, gehört genau ein Vorschlag dazu, der diesen Bereich erweitert. Für die übrigen erkannten Bereiche gilt: mindestens einer, solange die Ablage Belege hergibt.`,
+    scope
+      ? `Pflichtregel zu den Bereichen: Es kommen ausschließlich Vorschläge zu diesen Bereichen: ${scope}. Jeder Vorschlag trägt genau einen dieser Schlüssel als \`area\`; Vorschläge zu anderen Bereichen sind falsch, auch wenn sie wichtig erscheinen. Alle Vorschläge gehören zu diesen Bereichen — nicht nur der erste.`
+      : `Pflichtregel zu den Bereichen: Für jeden Bereich, der unten als Pflichtvorschlag steht, gehört genau ein Vorschlag dazu, der diesen Bereich erweitert. Für die übrigen erkannten Bereiche gilt: mindestens einer, solange die Ablage Belege hergibt.`,
     "`area` benennt den Bereich eines Vorschlags mit genau einem dieser Schlüssel: " +
       PROJECT_AREAS.map((area) => `"${area.key}"`).join(", ") +
       ".",
@@ -1220,7 +1387,7 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     'Die Mehrheit der Vorschläge sind "Erweitern": mindestens die Hälfte, ab sechs Vorschlägen mindestens zwei Drittel.',
     'Ein "Erweitern"-Vorschlag ist ein vollständiges Feature, kein Detail: eine neue Funktion, eine neue Ansicht, ein neuer Modus, ein neuer Befehl, eine neue Auswertung, eine neue Automatik oder ein neuer Anwendungsfall — und er verbessert die Nutzung.',
     "Wenn das Projekt zu wenig hergibt, liefere weniger Vorschläge statt geratener.",
-    focus ? `Besonderes Augenmerk: ${focus}` : "",
+    scope ? `${hint ? `Zusätzlich im Blick: ${hint}` : ""}` : hint ? `Besonderes Augenmerk: ${hint}` : "",
     "",
     `PROJEKTVERZEICHNIS: ${root}`,
     analysis.text,
@@ -1468,6 +1635,8 @@ export default {
         toast("Keine Belege in dieser Session — kein Vorschlag ohne Grundlage", "warning")
         return false
       }
+      // Ein Argument, das einen Bereich benennt, wird zum Filter.
+      const scope = focusParts(focus)
 
       pending = true
       try {
@@ -1497,13 +1666,24 @@ export default {
 
         // Zweite, belegbasierte Bremse: das Modell darf sich an der Obergrenze
         // nicht vorbeireden. Bei mehr Vorschlägen als die Session trägt, fliegt
-        // der Rest hier raus.
-        const suggestions = technicalOnly(
-          generated
-            ? parseSuggestions(generated?.text ?? generated).slice(0, suggestionBudget(evidence))
-            : fallbackSuggestions(evidence),
-          evidence,
-        )
+        // der Rest hier raus. Mit Filter zaehlt zusaetzlich nur der gefragte
+        // Bereich — und wenn dazu nichts kam, greift der Bereich selbst.
+        const budget = scope.areas.length
+          ? Math.min(suggestionBudget(evidence), FILTER_SUGGESTIONS)
+          : suggestionBudget(evidence)
+        const listed = generated
+          ? parseSuggestions(generated?.text ?? generated).slice(0, budget)
+          : fallbackSuggestions(evidence)
+        const filtered = filterByAreas(listed, scope.areas)
+        const chosen = filtered.length || !scope.areas.length ? filtered : scope.areas.map(areaFallback)
+        const suggestions = technicalOnly(chosen, evidence)
+
+        if (scope.areas.length) {
+          toast(
+            `${scope.areas.map((area) => area.label).join(", ")}: ${suggestions.length} von ${listed.length} Vorschlägen`,
+            "info",
+          )
+        }
 
         if (!suggestions.length) {
           toast("Die Belege geben keinen nächsten Schritt her", "info")
@@ -1511,7 +1691,9 @@ export default {
         }
 
         const base = evidence.mode === "Umsetzen" ? "Was als Nächstes? — auch abseits vom Faden" : "Was als Nächstes?"
-        const title = `${base} (${suggestions.length})`
+        const title = scope.areas.length
+          ? `${scope.areas.map((area) => area.label).join(", ")}: was als Nächstes? (${suggestions.length})`
+          : `${base} (${suggestions.length})`
 
         // Als Formular statt als Overlay: das rendert inline im Verlauf, genau
         // wie eine Frage des question-Tools. `multiselect` ist der native
@@ -1595,6 +1777,10 @@ export default {
       }
 
       const { evidence } = readEvidence(sessionID)
+      // Ein Argument, das einen Bereich benennt, wird zum Filter: dann kommen
+      // ausschliesslich Vorschlaege dieses Bereichs. Alles andere bleibt Hinweis.
+      const scope = focusParts(focus)
+      const scopeKeys = scope.areas.map((area) => area.key)
       pending = true
       try {
         toast(`Projekt lesen: ${root}`, "info")
@@ -1639,11 +1825,27 @@ export default {
         }
 
         const report = generated ? parseProjectReport(generated?.text ?? generated) : { summary: "", suggestions: [] }
-        const suggestions = ensureAreaSuggestions(
-          technicalOnly(report.suggestions.length ? report.suggestions : projectFallback(files, evidence), evidence),
-          ensureCoreAreas(analysis.areas, analysis.files),
-          suggestionBudget(evidence),
-        ).slice(0, MAX_SUGGESTIONS)
+        const areas = selectAreas(analysis.areas, analysis.files, scopeKeys)
+        const budget = scopeKeys.length
+          ? Math.min(suggestionBudget(evidence), FILTER_SUGGESTIONS)
+          : suggestionBudget(evidence)
+        const listed = technicalOnly(
+          report.suggestions.length ? report.suggestions : projectFallback(files, evidence),
+          evidence,
+        )
+        // Der Filter wird nachgehalten, nicht erhofft: was nicht zum gefragten
+        // Bereich gehoert, faellt hier heraus. Liefert das Modell dazu nichts,
+        // bleibt als letzter Halt ein Vorschlag aus dem Bereich selbst — ein
+        // fremder Vorschlag waere die falsche Antwort auf die Frage.
+        const filtered = filterByAreas(listed, scope.areas)
+        const chosen = filtered.length ? filtered : scope.areas.map(areaFallback)
+        const suggestions = ensureAreaSuggestions(chosen, areas, budget).slice(0, MAX_SUGGESTIONS)
+        if (scope.areas.length) {
+          toast(
+            `${scope.areas.map((area) => area.label).join(", ")}: ${suggestions.length} von ${listed.length} Vorschlägen`,
+            "info",
+          )
+        }
         if (!suggestions.length) {
           toast("Das Projekt gibt keinen nächsten Schritt her", "info")
           return true
@@ -1652,12 +1854,15 @@ export default {
         const extra = [
           `Projektverzeichnis: ${root}`,
           `Gelesene Projektdateien: ${files.length}`,
+          scope.areas.length ? `Gefragter Bereich: ${scope.areas.map((area) => area.label).join(", ")}` : "",
           report.summary ? `Projektübersicht: ${report.summary}` : "",
         ].filter(Boolean)
 
         const formID = await openSuggestionForm(sessionID, {
           suggestions,
-          title: `Nächste Schritte im Projekt (${suggestions.length})`,
+          title: scope.areas.length
+            ? `${scope.areas.map((area) => area.label).join(", ")} — nächste Schritte (${suggestions.length})`
+            : `Nächste Schritte im Projekt (${suggestions.length})`,
           message: report.summary ? clip(report.summary, 400) : `Projektüberblick über ${files.length} Dateien`,
         })
         if (!formID) return false
