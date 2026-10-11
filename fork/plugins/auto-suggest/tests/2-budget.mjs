@@ -155,7 +155,8 @@ console.log("buildPrompt: Anzahl und Regeln")
 const fixed = buildPrompt(evidence())
 check("leichte Session nennt die Zahl", fixed.includes("Schlage 3 nächste Arbeiten vor"), fixed.slice(0, 70))
 check("Untergrenze steht im Auftrag", fixed.includes("Mehr als 3 werden es nie."))
-check("auffuellen ist verboten", fixed.includes("auffüllen ist verboten"))
+check("statt Wiederholung wird Tiefe verlangt", fixed.includes("geh tiefer in dieselben Belege"))
+check("die leere Antwort ist unzulaessig", fixed.includes("Eine leere Antwort ist ungültig"))
 check("kein 'genau 10' mehr", !fixed.includes("genau 10"))
 
 const rich = buildPrompt(

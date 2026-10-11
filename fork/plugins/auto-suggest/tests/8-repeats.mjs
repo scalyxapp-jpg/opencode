@@ -11,7 +11,7 @@ const STAGED = join(tmpdir(), `auto-suggest-8-repeats-${process.pid}.mjs`)
 writeFileSync(
   STAGED,
   readFileSync(SOURCE, "utf8") +
-    "\nexport { titleTokens, sameWork, isRepeat, freshSuggestions, askedBlock, strictReminder, areaTemplate, ensureAreaSuggestions, buildPrompt, buildProjectPrompt, PROJECT_AREAS }\n",
+    "\nexport { titleTokens, sameWork, isRepeat, freshSuggestions,  askedBlock, strictReminder, areaTemplate, ensureAreaSuggestions, deriveSuggestions, buildPrompt, buildProjectPrompt, PROJECT_AREAS }\n",
 )
 
 const mod = await import(STAGED + "?t=" + Date.now())
@@ -24,6 +24,7 @@ const {
   strictReminder,
   areaTemplate,
   ensureAreaSuggestions,
+  deriveSuggestions,
   buildPrompt,
   buildProjectPrompt,
   PROJECT_AREAS,
@@ -102,7 +103,12 @@ const block = askedBlock(seen)
 check("die Liste steht im Block", block.includes("Neue Ansicht für Profile") && block.includes("Tests für src/a.ts"))
 check("der Block verbietet die Wiederholung", block.includes("nichts davon erneut anbieten"))
 check("gleicher Gedanke, andere Worte zaehlt als Wiederholung", block.includes("anderen Worten gilt als Wiederholung"))
-check("weniger ist erlaubt statt Wiederholung", block.includes("liefere weniger"))
+check(
+  "leer oder wiederholt ist unzulaessig",
+  block.includes("Eine leere Liste oder eine Liste mit Wiederholungen ist ungültig"),
+)
+check("stattdessen wird Tiefe verlangt", block.includes("geh tiefer"))
+check("und keine Flucht in weniger", block.includes("liefere weniger") === false)
 check(
   "der Nachdruck nennt den Grund",
   strictReminder().includes("ACHTUNG") && strictReminder().includes("BEREITS VORGESCHLAGEN"),
@@ -153,6 +159,71 @@ check(
     "BEREITS VORGESCHLAGEN",
   ) === false,
 )
+
+console.log("")
+console.log("Der Vorrat aus der Ablage: es gibt immer einen Vorschlag")
+const material = {
+  edited: ["src/plugin.ts"],
+  files: ["src/a.ts", "src/b.ts", "src/a.ts"],
+  commands: ["bun test src"],
+  failures: [{ tool: "bash", target: "bun test", error: "1 Test fehlgeschlagen" }],
+  manifests: ["package.json"],
+  areas: [{ key: "gui", label: "Oberfläche (GUI)", samples: ["components/Button.tsx", "app/App.tsx"] }],
+}
+const derived = deriveSuggestions(material, [], 100)
+check("es kommen viele zusammen", derived.length >= 20, String(derived.length))
+check(
+  "der Fehlschlag steht vorn",
+  derived[0]?.title.includes("Fehlschlag bash auf bun test"),
+  String(derived[0]?.title),
+)
+check("keine Datei doppelt", new Set(derived.map((item) => item.title)).size === derived.length)
+check(
+  "je Datei verschiedene Arbeiten",
+  derived.filter((item) => item.title.includes("src/a.ts")).length >= 8,
+  String(derived.filter((item) => item.title.includes("src/a.ts")).length),
+)
+check(
+  "Bereiche tragen ihren Schluessel",
+  derived.some((item) => item.area === "gui"),
+  JSON.stringify(derived.filter((item) => item.area).slice(0, 2)),
+)
+check(
+  "jeder Vorschlag nennt eine Richtung",
+  derived.every((item) => /^(Erweitern|Vertiefen|Fortsetzen|Absichern)/.test(item.detail)),
+)
+check("der Deckel greift", deriveSuggestions(material, [], 3).length === 3)
+const seenDerived = derived.slice(0, 10).map((item) => item.title)
+check(
+  "Bekanntes faellt heraus",
+  deriveSuggestions(material, seenDerived, 100).every((item) => !seenDerived.includes(item.title)),
+)
+check(
+  "und es bleibt trotzdem reichlich",
+  deriveSuggestions(material, seenDerived, 100).length >= 10,
+  String(deriveSuggestions(material, seenDerived, 100).length),
+)
+const alles = derived.map((item) => item.title)
+const zweiteRunde = deriveSuggestions(material, alles, 100)
+check("auch nach dem ersten Durchgang kommt noch etwas", zweiteRunde.length > 0, String(zweiteRunde.length))
+check(
+  "und es ist als weiterer Durchgang benannt",
+  zweiteRunde.every((item) => item.title.includes("Durchgang")),
+  String(zweiteRunde[0]?.title),
+)
+check(
+  "auch nach drei Durchgaengen kommt noch etwas",
+  deriveSuggestions(material, [...alles, ...zweiteRunde.map((i) => i.title)], 100).length > 0,
+)
+const nurBefehle = deriveSuggestions({ commands: ["bun test src", "bun run build"], files: [] }, [], 10)
+check("auch ein Aufruf ergibt Vorschlaege", nurBefehle.length > 0, JSON.stringify(nurBefehle.map((item) => item.title)))
+check(
+  "und zwar zum Aufruf selbst",
+  nurBefehle.some((item) => item.title.includes("bun test src")),
+  JSON.stringify(nurBefehle.map((item) => item.title)),
+)
+check("auch ohne Belege stuerzt es nicht ab", Array.isArray(deriveSuggestions({}, [], 5)))
+check("ohne Material bleibt es leer", deriveSuggestions({}, [], 5).length === 0)
 
 console.log("")
 console.log("Pflichtbereiche wiederholen sich nicht")

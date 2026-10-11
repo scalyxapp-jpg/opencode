@@ -391,6 +391,11 @@ check(
   String(server.modelPrompts.at(-1)?.slice(-120)),
 )
 check(
+  "es kommt trotzdem ein Formular",
+  (fourthForm?.fields?.[0]?.options ?? []).length > 0,
+  JSON.stringify(fourthShown),
+)
+check(
   "kein Titel wiederholt sich",
   fourthShown.every((title) => !firstShown.includes(title) && !guiShown.includes(title) && !thirdShown.includes(title)),
   JSON.stringify(fourthShown),

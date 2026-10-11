@@ -207,20 +207,41 @@ das:
 
 Gezeigt heisst gemerkt: die Titel wandern erst dann in die Ablage
 (`plugin.auto-suggest.asked.json`, je Sitzung und je Projektverzeichnis, die
-letzten 80 Titel), wenn das Formular stehen bleibt. Gibt es am Ende nichts
-Neues, gibt es **kein** Formular, sondern den Hinweis „Nichts Neues" — eine
-Wiederholung wäre keine Antwort.
+letzten 80 Titel), wenn das Formular stehen bleibt.
+
+**Ein Lauf endet nie ohne Vorschläge.** Das Modell wird nicht nur gebeten,
+sondern verpflichtet: eine leere Liste ist im Auftrag ausdrücklich ungültig, und
+statt weniger zu liefern soll es tiefer in dieselbe Ablage gehen (anderer
+Aspekt, anderer Baustein, Rand- oder Fehlerfall, nächster Ausbauschritt). Zeigt
+es trotzdem nur Bekanntes, wird einmal mit Nachdruck nachgefragt — und danach
+übernimmt die Ablage selbst: `deriveSuggestions` bildet aus dem, was wirklich
+dasteht, neue Arbeiten, je Datei zwölf (Tests, Ränder, Fehlerpfade, Eingaben,
+Zwischenstände, Dokumentation, Nutzung, Aufteilung, tote Pfade, Rückmeldungen,
+Anwendungsfall, Fortsetzen) und je Bereich mit Fundstelle zwei. Der Vorrat
+wächst also mit dem Projekt.
+
+Ist nach vielen Runden auch der abgearbeitet, wird der Durchgang benannt
+(`… — zweite Durchgang`): dieselbe Arbeit nach dem ersten Durchgang noch einmal
+anzugehen ist eine andere Aufgabe als vorher. Damit gibt es keine Antwort
+„nichts Neues" — an keiner Stelle.
 
 Für die Pflichtbereiche Oberfläche und Architektur gibt es je vier Wortlaute,
 die der Reihe nach verbraucht werden. Sind alle dagewesen und liefert das Modell
 dazu nichts Neues, bleibt der Bereich leer: lieber kein Pflichtvorschlag als
-derselbe zum zweiten Mal.
+derselbe zum zweiten Mal. Der Lauf selbst bleibt trotzdem gefüllt, weil die
+Ableitung aus der Ablage dann einspringt.
 
-Aus dem Zwischenspeicher kommt ebenfalls nur Neues — ein Lauf übernimmt aus dem
-Bericht ausschließlich Vorschläge, die noch nicht gezeigt wurden. Ist der
-Bericht für den gefragten Bereich abgegrast, wird gelesen und neu gefragt. Das
-ist der Grund, warum der Bericht mehr aufbewahrt, als ein Lauf zeigt: der Rest
-kommt beim nächsten Mal als etwas Neues heraus.
+Zwei Randfälle gehören dazu: zeigt `/next` in einer Sitzung **keinerlei** Belege
+(nichts gelesen, nichts geändert) oder ist im Verlauf nichts Greifbares, wird statt
+einer Absage das Projekt gelesen — die Sitzung kennt ihr Verzeichnis. Und
+ausgeführte Befehle zählen als Anknüpfungspunkt: aus `bun test src` wird etwa
+»Aufruf „bun test src" in die Prüfung aufnehmen«.
+
+Aus dem Zwischenspeicher kommt ebenfalls nur Neues: ein Lauf übernimmt aus dem
+Bericht ausschließlich Vorschläge, die noch nicht gezeigt wurden. Ist der Bericht
+für den gefragten Bereich abgegrast, wird gelesen und neu gefragt. Das ist der
+Grund, warum der Bericht mehr aufbewahrt, als ein Lauf zeigt — der Rest kommt
+beim nächsten Mal als etwas Neues heraus.
 
 ### Es öffnet sich nichts von selbst
 
@@ -360,15 +381,15 @@ nicht erst startet. Am Ende steht die Summe:
 
 ```
 ok   1-evidence.mjs  27 bestanden, 0 fehlgeschlagen
-ok   2-budget.mjs    48 bestanden, 0 fehlgeschlagen
+ok   2-budget.mjs    49 bestanden, 0 fehlgeschlagen
 ok   3-forms.mjs     30 bestanden, 0 fehlgeschlagen
 ok   4-flow.mjs      88 bestanden, 0 fehlgeschlagen
 ok   5-answers.mjs   16 bestanden, 0 fehlgeschlagen
 ok   6-areas.mjs     54 bestanden, 0 fehlgeschlagen
-ok   7-report.mjs    57 bestanden, 0 fehlgeschlagen
-ok   8-repeats.mjs   37 bestanden, 0 fehlgeschlagen
+ok   7-report.mjs    58 bestanden, 0 fehlgeschlagen
+ok   8-repeats.mjs   55 bestanden, 0 fehlgeschlagen
 
-Summe: 357 bestanden, 0 fehlgeschlagen in 8 Suiten
+Summe: 377 bestanden, 0 fehlgeschlagen in 8 Suiten
 ```
 
 | Suite            | Prüft                                                                                                                  |
@@ -380,7 +401,7 @@ Summe: 357 bestanden, 0 fehlgeschlagen in 8 Suiten
 | `5-answers.mjs`  | Antworten, wie Modelle sie wirklich schicken: Codezäune, Prosa, abgebrochene Arrays, Maskierung                        |
 | `6-areas.mjs`    | Bereichsfilter (`/nextProject Gui`), Pflichtbereiche, Rückfall                                                         |
 | `7-report.mjs`   | Zwischenspeicher des Projektberichts: Frist, Baumkennzeichen, Abdeckung, sichtbarer Stand, nur Neues aus dem Bericht   |
-| `8-repeats.mjs`  | Wiederholungssperre: Titelvergleich, was dem Modell gesagt wird, Wortlaute der Pflichtbereiche                         |
+| `8-repeats.mjs`  | Wiederholungssperre: Titelvergleich, was dem Modell gesagt wird, der Vorrat aus der Ablage (nie ein leerer Lauf)       |
 
 Die Suiten sind **rein lokal**. Sie lesen `tui.js` über den relativen Pfad
 `../tui.js`, kopieren den Quelltext zum Importieren ins Systemverzeichnis

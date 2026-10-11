@@ -269,7 +269,7 @@ function buildPrompt(evidence, focus, seen) {
 
   return [
     `AUFGABE: Schlage ${band} nächste Arbeiten vor, die aus dieser Session folgen.`,
-    `Mehr als ${budget} werden es nie. Trägt die Session weniger, nimm weniger — auffüllen ist verboten.`,
+    `Mehr als ${budget} werden es nie. Wird es weniger, dann nur, weil es nichts anderes mehr gibt: statt zu wiederholen oder leer zu antworten, geh tiefer in dieselben Belege.`,
     "Der Schwerpunkt liegt auf dem Ausbau: neue Fähigkeiten, neue Anwendungsfälle und Ideen,",
     "die auf dem entstandenen Stand aufbauen. Absicherung ist die Ausnahme, nicht die Regel.",
     "",
@@ -286,7 +286,7 @@ function buildPrompt(evidence, focus, seen) {
     "4. Zwei Vorschläge dürfen sich nicht überschneiden. Jeder deckt einen eigenen Punkt ab — Wiederholungen mit anderem Wortlaut zählen nicht als zweiter Vorschlag.",
     '5. Die Mehrheit sind "Erweitern": mindestens die Hälfte, ab sechs Vorschlägen mindestens zwei Drittel. Sie dürfen über den bisherigen Faden hinausdenken, solange sie an die Belege anknüpfen.',
     '6. Höchstens einer ist "Fortsetzen" und höchstens einer ist "Absichern"; ab acht Vorschlägen höchstens zwei. Alles Übrige ist "Vertiefen".',
-    "7. Wenn die Belege keinen sinnvollen Schritt hergeben, gib ein leeres Array zurück.",
+    "7. Eine leere Antwort ist ungültig. Gibt es nichts Naheliegendes mehr, geh tiefer in dieselbe Ablage — ein anderer Aspekt derselben Sache, ein anderer Baustein, ein Rand- oder Fehlerfall, eine Alternative, der nächste Ausbauschritt. Tiefer heißt nicht erfunden: die Belege bleiben die Grundlage.",
     'Jeder Vorschlag ist technische Arbeit am Code oder am Projekt: bauen, umbauen, prüfen, verstehen. Rein Organisatorisches ist kein Vorschlag — kein "git commit", kein "push", kein Release, kein Changelog, kein Ticket, kein Termin.',
     'Ein "Erweitern"-Vorschlag ist ein vollständiges Feature, kein Detail: eine neue Funktion, eine neue Ansicht, ein neuer Modus, ein neuer Befehl, eine neue Auswertung, eine neue Automatik oder ein neuer Anwendungsfall.',
     "Er nennt den Nutzen in einem Satz, den Weg dorthin (wo im Code es ansetzt) und was neu entsteht. Im `prompt` steht das Feature als Ganzes, nicht sein erster Handgriff.",
@@ -486,11 +486,166 @@ function freshSuggestions(suggestions, seen) {
 }
 
 /**
+ * Was je Datei an Arbeit denkbar ist.
+ *
+ * Der Vorrat fuer den Fall, dass das Modell nur Bekanntes liefert: der Lauf darf
+ * nicht leer ausgehen, also wird aus dem abgeleitet, was wirklich dasteht. Je
+ * Datei und je Zeile eine andere Arbeit — Tests, Raender, Fehlerpfade,
+ * Dokumentation, Nutzung, Aufteilung, Eingaben, Rueckmeldungen.
+ */
+const DERIVE_FILE_STEPS = [
+  {
+    kind: "Absichern",
+    title: (file) => `Tests für ${file} nachziehen`,
+    detail: (file) => `Für ${file} ist kein Test im Spiel.`,
+  },
+  {
+    kind: "Absichern",
+    title: (file) => `Randfälle in ${file} abdecken`,
+    detail: (file) => `Die Ränder von ${file} sind ungeprüft.`,
+  },
+  {
+    kind: "Absichern",
+    title: (file) => `Fehlerpfade in ${file} prüfen`,
+    detail: (file) => `${file} behandelt Fehlerfälle nicht erkennbar.`,
+  },
+  {
+    kind: "Absichern",
+    title: (file) => `Ungeprüfte Eingaben in ${file} abfangen`,
+    detail: (file) => `Was in ${file} ankommt, wird nicht geprüft.`,
+  },
+  {
+    kind: "Absichern",
+    title: (file) => `Zwischenstände in ${file} prüfen`,
+    detail: (file) => `Was ${file} zwischendurch liefert, wird nirgends geprüft.`,
+  },
+  {
+    kind: "Vertiefen",
+    title: (file) => `${file} dokumentieren`,
+    detail: (file) => `Zu ${file} wurde keine Dokumentation angepasst.`,
+  },
+  {
+    kind: "Vertiefen",
+    title: (file) => `Nutzung von ${file} beschreiben`,
+    detail: (file) => `Wie ${file} benutzt wird, steht nirgends.`,
+  },
+  {
+    kind: "Vertiefen",
+    title: (file) => `${file} in kleinere Einheiten teilen`,
+    detail: (file) => `${file} trägt mehrere Aufgaben auf einmal.`,
+  },
+  {
+    kind: "Vertiefen",
+    title: (file) => `Tote Pfade in ${file} entfernen`,
+    detail: (file) => `${file} führt Wege mit, die niemand mehr geht.`,
+  },
+  {
+    kind: "Erweitern",
+    title: (file) => `Rückmeldungen aus ${file} verbessern`,
+    detail: (file) => `${file} meldet Fehler nicht verständlich.`,
+  },
+  {
+    kind: "Erweitern",
+    title: (file) => `${file} um einen Anwendungsfall erweitern`,
+    detail: (file) => `${file} deckt bisher nur den offensichtlichen Fall ab.`,
+  },
+  {
+    kind: "Fortsetzen",
+    title: (file) => `An ${file} weiterarbeiten`,
+    detail: (file) => `${file} war zuletzt im Spiel und ist nicht abgeschlossen.`,
+  },
+]
+
+/** Wie ein späterer Durchgang heißt, wenn alles schon dran war. */
+const DERIVE_ROUNDS = ["zweite", "dritte", "vierte"]
+
+/**
+ * Vorschläge aus der Ablage selbst.
+ *
+ * Reihenfolge: erst was am Vorgang hängt (Fehlschläge, geänderte Dateien), dann
+ * die übrigen Dateien, dann die Bereiche mit ihren Fundstellen. Alles Bekannte
+ * fällt vorher heraus — abgeleitet heißt nicht wiederholt.
+ *
+ * Ist irgendwann alles abgearbeitet, wird der Durchgang benannt: dieselbe
+ * Arbeit nach dem ersten Durchgang noch einmal anzugehen ist eine andere
+ * Aufgabe als vorher — und der Lauf endet so nie ohne Vorschlag.
+ */
+function deriveSuggestions(input, seen, budget, round = 0) {
+  const material = input ?? {}
+  const suffix = round ? ` — ${DERIVE_ROUNDS[round - 1] ?? `${round + 1}.`} Durchgang` : ""
+  const edited = (material.edited ?? []).filter(Boolean)
+  const rest = (material.files ?? []).filter(Boolean).filter((file) => !edited.includes(file))
+  const files = [...new Set([...edited, ...rest])].slice(0, 8)
+  const candidates = []
+
+  for (const failure of (material.failures ?? []).slice(0, 4)) {
+    const where = failure.target ? ` auf ${failure.target}` : ""
+    candidates.push({
+      title: `Fehlschlag ${failure.tool}${where} beheben${suffix}`,
+      detail: withKind("Absichern", `Der Aufruf ist fehlgeschlagen: ${failure.error || failure.tool}.`),
+      prompt: "",
+    })
+  }
+
+  for (const file of files) {
+    for (const step of DERIVE_FILE_STEPS) {
+      candidates.push({ title: step.title(file) + suffix, detail: withKind(step.kind, step.detail(file)), prompt: "" })
+    }
+  }
+
+  for (const area of material.areas ?? []) {
+    for (const sample of (area.samples ?? []).slice(0, 3)) {
+      candidates.push({
+        area: area.key,
+        title: `${area.label}: ${sample} ausbauen${suffix}`,
+        detail: withKind(
+          "Erweitern",
+          `${area.label} ist an ${sample} zu erkennen; der nächste Schritt baut darauf auf.`,
+        ),
+        prompt: "",
+      })
+      candidates.push({
+        area: area.key,
+        title: `${area.label}: ${sample} besser anbinden${suffix}`,
+        detail: withKind("Erweitern", `${sample} steht in ${area.label}, ohne dass der Anschluss geregelt ist.`),
+        prompt: "",
+      })
+    }
+  }
+
+  for (const command of (material.commands ?? []).slice(0, 3)) {
+    const text = clip(String(command).trim(), 40)
+    candidates.push({
+      title: `Aufruf "${text}" festhalten${suffix}`,
+      detail: withKind("Vertiefen", `Der Aufruf ${text} wurde von Hand ausgeführt; er wiederholt sich.`),
+      prompt: "",
+    })
+    candidates.push({
+      title: `Aufruf "${text}" in die Prüfung aufnehmen${suffix}`,
+      detail: withKind("Absichern", `Was ${text} prüft, läuft noch nirgends automatisch.`),
+      prompt: "",
+    })
+  }
+
+  for (const manifest of (material.manifests ?? []).slice(0, 2)) {
+    candidates.push({
+      title: `Angaben in ${manifest} prüfen${suffix}`,
+      detail: withKind("Vertiefen", `Beteiligt war ${manifest}; die Angaben sind ungeprüft.`),
+      prompt: "",
+    })
+  }
+
+  const fresh = freshSuggestions(candidates, seen).slice(0, budget)
+  if (fresh.length || round >= DERIVE_ROUNDS.length) return fresh
+  return deriveSuggestions(material, seen, budget, round + 1)
+}
+/**
  * Der Block, der dem Modell sagt, was es nicht wiederholen darf.
  *
  * Ohne ihn schlaegt ein Modell bei gleichem Zusammenhang gern dasselbe vor —
  * der Verlauf ist ja derselbe. Mit ihm wandert die Liste des Schon-gefragt in
- * den Auftrag.
+ * den Auftrag. Eine leere Antwort ist keine zulaessige Antwort: wer die
+ * naheliegenden Schritte verbraucht hat, geht tiefer in dieselbe Ablage.
  */
 function askedBlock(seen) {
   const list = (seen ?? []).filter(Boolean)
@@ -500,7 +655,9 @@ function askedBlock(seen) {
     "BEREITS VORGESCHLAGEN (in dieser Sitzung oder für dieses Projekt — nichts davon erneut anbieten):",
     ...list.map((title) => `  - ${title}`),
     "Jeder neue Vorschlag ist eine andere Arbeit als alles oben Genannte. Derselbe Gedanke mit anderen Worten gilt als Wiederholung.",
-    "Wenn dir nichts anderes einfällt, liefere weniger oder eine leere Liste. Eine Wiederholung ist immer falsch.",
+    "Eine leere Liste oder eine Liste mit Wiederholungen ist ungültig. Sind die naheliegenden Schritte verbraucht, geh tiefer:",
+    "ein anderer Aspekt derselben Sache, ein anderer Baustein, ein Rand- oder Fehlerfall, eine Alternative, der nächste Ausbauschritt.",
+    "Die Belege bleiben dabei die Grundlage — tiefer heißt nicht erfunden.",
   ].join("\n")
 }
 
@@ -509,8 +666,8 @@ function strictReminder() {
   return [
     "",
     "ACHTUNG: Deine Liste enthielt nur Vorschläge, die oben unter BEREITS VORGESCHLAGEN stehen.",
-    "Antworte jetzt ausschließlich mit Arbeiten, die dort nicht stehen — andere Bausteine, andere Dateien,",
-    "andere Anwendungsfälle. Wenn es nichts anderes gibt, antworte mit einem leeren Array.",
+    "Das ist keine gültige Antwort. Liefere jetzt ausschließlich andere Arbeiten — andere Bausteine, andere Dateien,",
+    "andere Anwendungsfälle, andere Aspekte derselben Sache. Eine leere Liste ist ebenso ungültig wie eine Wiederholung.",
   ].join("\n")
 }
 
@@ -1590,7 +1747,7 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits, seen) {
     'Jeder Vorschlag ist technische Arbeit am Code oder am Projekt: bauen, umbauen, prüfen, verstehen. Rein Organisatorisches ist kein Vorschlag — kein "git commit", kein "push", kein Release, kein Changelog, kein Ticket, kein Termin.',
     'Die Mehrheit der Vorschläge sind "Erweitern": mindestens die Hälfte, ab sechs Vorschlägen mindestens zwei Drittel.',
     'Ein "Erweitern"-Vorschlag ist ein vollständiges Feature, kein Detail: eine neue Funktion, eine neue Ansicht, ein neuer Modus, ein neuer Befehl, eine neue Auswertung, eine neue Automatik oder ein neuer Anwendungsfall — und er verbessert die Nutzung.',
-    "Wenn das Projekt zu wenig hergibt, liefere weniger Vorschläge statt geratener.",
+    "Erfinde nichts. Sind die naheliegenden Schritte verbraucht, geh tiefer in dieselbe Ablage (anderer Aspekt, anderer Baustein, Rand- oder Fehlerfall, nächster Ausbauschritt), statt weniger oder gar nichts zu liefern — eine leere Liste ist ungültig.",
     scope ? `${hint ? `Zusätzlich im Blick: ${hint}` : ""}` : hint ? `Besonderes Augenmerk: ${hint}` : "",
     "",
     askedBlock(seen),
@@ -1838,8 +1995,10 @@ export default {
 
       const { evidence, grounded } = readEvidence(sessionID)
       if (!grounded) {
-        toast("Keine Belege in dieser Session — kein Vorschlag ohne Grundlage", "warning")
-        return false
+        // Kein Leerlauf: ohne Belege aus dieser Sitzung wird das Projekt
+        // gelesen. Die Sitzung kennt ihr Verzeichnis, also gibt es dort etwas.
+        toast("Keine Belege in dieser Sitzung — lese stattdessen das Projekt", "info")
+        return await askProject(sessionID, focus)
       }
       // Ein Argument, das einen Bereich benennt, wird zum Filter.
       const scope = focusParts(focus)
@@ -1888,14 +2047,33 @@ export default {
         let generated = await askModel(false)
         let fresh = freshSuggestions(parseListed(generated), seen)
         if (generated && seen.length && !fresh.length) {
-          toast("Nur schon Vorgeschlagenes — noch einmal mit Nachdruck", "info")
+          toast("Antwort nur mit Bekanntem — frage mit Nachdruck nach anderen", "info")
           generated = await askModel(true)
           fresh = freshSuggestions(parseListed(generated), seen)
         }
-        // Bringt das Modell nichts Neues — sei es, weil es nicht geantwortet hat,
+        // Bringt das Modell nur Bekanntes — sei es, weil es nicht geantwortet hat,
         // sei es, weil es sich wiederholt hat —, gilt der Rest aus den Belegen.
-        // Auch der muss neu sein.
+        // Auch der muss neu sein; reicht auch das nicht, wird aus der Ablage
+        // selbst abgeleitet. Ein Lauf endet nie ohne Vorschlaege.
         if (!fresh.length) fresh = freshSuggestions(fallbackSuggestions(evidence), seen)
+        if (!fresh.length) {
+          fresh = deriveSuggestions(
+            {
+              edited: evidence.edited,
+              files: [
+                ...(evidence.code ?? []),
+                ...(evidence.readOnly ?? []),
+                ...(evidence.tests ?? []),
+                ...(evidence.docs ?? []),
+              ],
+              failures: evidence.failures,
+              manifests: evidence.manifests,
+              commands: evidence.commands,
+            },
+            seen,
+            budget,
+          )
+        }
 
         // Zweite, belegbasierte Bremse: das Modell darf sich an der Obergrenze
         // nicht vorbeireden. Mit Filter zaehlt zusaetzlich nur der gefragte
@@ -1913,13 +2091,11 @@ export default {
         }
 
         if (!suggestions.length) {
-          toast(
-            seen.length
-              ? "Nichts Neues: diese Sitzung hat schon alles dazu gesehen"
-              : "Die Belege geben keinen nächsten Schritt her",
-            "info",
-          )
-          return true
+          // Letzter Halt gegen einen leeren Lauf: das Projekt heranziehen. Die
+          // Sitzung kennt ihr Verzeichnis, dort gibt es fast immer etwas.
+          pending = false
+          toast("Im Verlauf ist nichts Greifbares — lese stattdessen das Projekt", "info")
+          return await askProject(sessionID, focus)
         }
 
         const base = evidence.mode === "Umsetzen" ? "Was als Nächstes? — auch abseits vom Faden" : "Was als Nächstes?"
@@ -2030,7 +2206,8 @@ export default {
      * Der Filter wird nachgehalten, nicht erhofft: was nicht zum gefragten
      * Bereich gehoert, faellt heraus. Dazu die harte Regel: nichts, was in
      * dieser Sitzung oder fuer dieses Projekt schon einmal angeboten wurde,
-     * kommt ein zweites Mal. Gibt es nichts Neues, gibt es kein Formular.
+     * kommt ein zweites Mal. Reicht der Bericht nicht, wird aus der Ablage
+     * abgeleitet — ein Lauf endet nie ohne Vorschlaege.
      */
     async function offerProject(sessionID, input) {
       const { root, analysis, listed, summary, evidence, scope, status, seen, keys } = input
@@ -2041,6 +2218,23 @@ export default {
         : suggestionBudget(evidence)
       const fresh = freshSuggestions(listed, seen)
       const filtered = filterByAreas(fresh, scope.areas)
+      // Reicht der Bericht nicht, wird aus dem Baum abgeleitet: je Datei und je
+      // Bereich eine andere Arbeit. Damit bleibt kein Lauf ohne Vorschlag.
+      const derived = filterByAreas(
+        deriveSuggestions(
+          {
+            edited: evidence.edited,
+            files: analysis?.files ?? [],
+            failures: evidence.failures,
+            manifests: evidence.manifests,
+            commands: evidence.commands,
+            areas,
+          },
+          seen,
+          budget,
+        ),
+        scope.areas,
+      )
       const fallback = freshSuggestions(
         scopeKeys
           .map((key) => areas.find((area) => area.key === key) ?? scope.areas.find((area) => area.key === key))
@@ -2048,10 +2242,12 @@ export default {
           .map(areaFallback),
         seen,
       )
-      const suggestions = ensureAreaSuggestions(filtered.length ? filtered : fallback, areas, budget, seen).slice(
-        0,
-        MAX_SUGGESTIONS,
-      )
+      const suggestions = ensureAreaSuggestions(
+        filtered.length ? filtered : [...derived, ...fallback],
+        areas,
+        budget,
+        seen,
+      ).slice(0, MAX_SUGGESTIONS)
 
       if (scopeKeys.length) {
         toast(
@@ -2060,11 +2256,13 @@ export default {
         )
       }
       if (!suggestions.length) {
-        toast("Nichts Neues: alles dazu wurde in dieser Sitzung schon vorgeschlagen", "info")
+        // Kann nur eintreten, wenn der Baum keine einzige lesbare Datei hat;
+        // das faengt schon die Pruefung nach dem Lesen ab.
+        toast("Ohne Anknüpfungspunkt im Baum lässt sich nichts begründen", "warning")
         return true
       }
       if (seen?.length && !fresh.length) {
-        toast(`Nur schon Vorgeschlagenes im Bericht — ${suggestions.length} neue daraus abgeleitet`, "info")
+        toast(`Aus dem Bericht abgeleitet: ${suggestions.length} weitere Vorschläge`, "info")
       }
 
       const count = analysis?.count ?? 0
@@ -2157,7 +2355,7 @@ export default {
                 keys,
               })
             }
-            toast("Der Bericht ist abgegrast — frage nach neuen Vorschlägen", "info")
+            toast("Bericht ausgeschöpft — frage das Modell nach weiteren Vorschlägen", "info")
           }
         }
 
@@ -2188,7 +2386,7 @@ export default {
         let generated = await projectReport(client, sessionID, root, analysis, keyFiles, focus, seen)
         let report = generated ? parseProjectReport(generated?.text ?? generated) : { summary: "", suggestions: [] }
         if (generated && seen.length && !freshSuggestions(report.suggestions, seen).length) {
-          toast("Nur schon Vorgeschlagenes — noch einmal mit Nachdruck", "info")
+          toast("Antwort nur mit Bekanntem — frage mit Nachdruck nach anderen", "info")
           generated = await projectReport(client, sessionID, root, analysis, keyFiles, focus, seen, true)
           if (generated) report = parseProjectReport(generated?.text ?? generated)
         }
