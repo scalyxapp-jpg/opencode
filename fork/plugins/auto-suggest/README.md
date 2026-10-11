@@ -399,8 +399,10 @@ ok   5-answers.mjs   30 bestanden, 0 fehlgeschlagen
 ok   6-areas.mjs     54 bestanden, 0 fehlgeschlagen
 ok   7-report.mjs    58 bestanden, 0 fehlgeschlagen
 ok   8-repeats.mjs   55 bestanden, 0 fehlgeschlagen
+ok   9-edge.mjs      48 bestanden, 0 fehlgeschlagen
+ok   10-errors.mjs   37 bestanden, 0 fehlgeschlagen
 
-Summe: 391 bestanden, 0 fehlgeschlagen in 8 Suiten
+Summe: 476 bestanden, 0 fehlgeschlagen in 10 Suiten
 ```
 
 | Suite            | Prüft                                                                                                                  |
@@ -413,6 +415,8 @@ Summe: 391 bestanden, 0 fehlgeschlagen in 8 Suiten
 | `6-areas.mjs`    | Bereichsfilter (`/nextProject Gui`), Pflichtbereiche, Rückfall                                                         |
 | `7-report.mjs`   | Zwischenspeicher des Projektberichts: Frist, Baumkennzeichen, Abdeckung, sichtbarer Stand, nur Neues aus dem Bericht   |
 | `8-repeats.mjs`  | Wiederholungssperre: Titelvergleich, was dem Modell gesagt wird, der Vorrat aus der Ablage (nie ein leerer Lauf)       |
+| `9-edge.mjs`     | Randfälle: Nicht-Strings, null/undefined, Grenzlängen, kaputte Eingaben                                                |
+| `10-errors.mjs`  | Fehlerpfade: jede Schnittstelle darf scheitern, ohne Absturz oder unbehandelte Ablehnung                               |
 
 Die Suiten sind **rein lokal**. Sie lesen `tui.js` über den relativen Pfad
 `../tui.js`, kopieren den Quelltext zum Importieren ins Systemverzeichnis
@@ -425,6 +429,39 @@ Zwischendateien nach jeder Suite wieder weg.
 Eine neue Suite anlegen heisst: Datei `N-thema.mjs` in `tests/` legen, am Ende
 `N bestanden, M fehlgeschlagen` melden und sich mit Fehler beenden, wenn `M`
 größer als null ist. Der Läufer findet sie über das Namensmuster von selbst.
+
+## Fehlerpfade
+
+Das Plugin redet mit fremden Schnittstellen: dem Verlauf der Sitzung, dem Modell,
+dem Formularserver, der Dateiablage und der Oberfläche. Jede davon kann
+scheitern — mitten im Lauf. Deshalb gilt durchgehend: **kein Fehler darf den
+Befehl abstürzen lassen, und keiner darf Vorschläge stillschweigend
+verschlucken.**
+
+| Wo es klemmt                                    | Was passiert                                            |
+| ----------------------------------------------- | ------------------------------------------------------- |
+| Verlauf nicht abrufbar (`session.message.list`) | keine Belege; `/next` weicht auf das Projekt aus        |
+| Route nicht abrufbar (`router.current`)         | „Open a session first" statt Absturz im Tastenkuerzel   |
+| Modell nicht erreichbar (`session.generate`)    | Hinweis, dann Vorschläge aus den Belegen und der Ablage |
+| Formular nicht anlegbar (`form.create`)         | Hinweis mit der Ursache, kein halb offenes Formular     |
+| Formularliste nicht abrufbar (`form.list`)      | es wird trotzdem eines angelegt                         |
+| Formular nicht abfragbar (`form.get`)           | keine Absendung, kein Absturz                           |
+| Absenden scheitert (`session.prompt`)           | Hinweis mit der Zahl der Aufträge, die noch rausgingen  |
+| Ablage schreibgeschuetzt (`storage`)            | Vorschläge kommen trotzdem, nichts wird gemerkt         |
+| Datei nicht lesbar (`file.read`)                | Baum und Modell tragen den Lauf                         |
+| Baum nicht lesbar (`file.list`)                 | Hinweis, kein Formular                                  |
+| Projektverzeichnis fehlt (`session.get`)        | Hinweis, kein Formular                                  |
+| Oberfläche scheitert beim Melden (`ui.toast`)   | still geschluckt, der Lauf geht weiter                  |
+
+Dazu drei Vorsichtsmaßnahmen im Code selbst: `clip` verträgt Nicht-Strings
+(ein fehlendes Feld wird zu `""`, nicht zu einem Absturz), `collectEvidence`
+überspringt kaputte Einträge im Verlauf statt die ganze Auswertung
+mitzureißen, und die Befehlsaufrufe fangen eine unerwartete Ablehnung ab, die
+vor ihrem eigenen `try` entstehen könnte.
+
+`10-errors.mjs` fährt jede dieser Stellen mit einem Fake-Server an und prüft am
+Ende zusätzlich, dass **keine unbehandelte Ablehnung** entstanden ist
+(`process.on("unhandledRejection")`).
 
 ## Unterschiede zur Fassung im TUI-Quellbaum
 

@@ -80,7 +80,12 @@ const CODE_HINT = /\.(ts|tsx|js|jsx|mjs|cjs|go|rs|py|rb|java|kt|kts|swift|c|h|cc
  */
 const KINDS = ["Erweitern", "Vertiefen", "Fortsetzen", "Absichern"]
 
-const clip = (value, max) => (value.length > max ? value.slice(0, max - 1) + "…" : value)
+const clip = (value, max) => {
+  // Nicht nur Strings kommen hier an: ein Feld kann fehlen, eine Zahl sein oder
+  // aus einer fremden Fassung stammen. Ein Absturz waere der schlechteste Fall.
+  const text = typeof value === "string" ? value : String(value ?? "")
+  return text.length > max ? text.slice(0, max - 1) + "…" : text
+}
 
 const stringField = (input, keys) => {
   if (!input || typeof input !== "object") return ""
@@ -123,7 +128,9 @@ function commonRoot(files) {
  * Session-Anfang statt das, woran gerade gearbeitet wird.
  */
 function collectEvidence(messages) {
-  const all = messages ?? []
+  // Der Verlauf kommt von aussen. Ein einzelner kaputter Eintrag darf nicht die
+  // ganze Auswertung mitreissen — er wird uebersprungen.
+  const all = (messages ?? []).filter((message) => message && typeof message === "object")
   const assistant = all.filter((message) => message.type === "assistant")
   const recent = assistant.slice(-EVIDENCE_WINDOW)
 
@@ -1952,7 +1959,14 @@ export default {
 
     // Die Route traegt je nach Fassung `type` oder `name`.
     const currentSession = () => {
-      const route = ui.router.current()
+      // Die Route kommt von der Oberflaeche: fehlt sie oder wirft sie, ist die
+      // Antwort "keine Sitzung" — nicht ein Absturz im Tastenkuerzel.
+      let route
+      try {
+        route = ui.router.current()
+      } catch {
+        return undefined
+      }
       if (!route) return undefined
       const kind = route.type ?? route.name
       return kind === "session" ? (route.sessionID ?? route.params?.sessionID) : undefined
@@ -1960,7 +1974,14 @@ export default {
 
     /** Belege holen und prüfen, ob sie überhaupt etwas hergeben. */
     const readEvidence = (sessionID) => {
-      const messages = data.session.message.list(sessionID) ?? []
+      // Ist der Verlauf nicht abrufbar, gibt es eben keine Belege — aber keinen
+      // Absturz vor dem try/catch des Befehls.
+      let messages = []
+      try {
+        messages = data.session.message.list(sessionID) ?? []
+      } catch {
+        /* ohne Verlauf keine Belege */
+      }
       const evidence = collectEvidence(messages)
       const grounded =
         evidence.edited.length +
@@ -2235,15 +2256,29 @@ export default {
       // erste Auftrag startet den Lauf, die weiteren warten in der
       // Warteschlange und kommen als eigene Turns dran.
       const known = new Map((suggestions ?? []).map((suggestion) => [suggestion.title, suggestion]))
+      let sent = 0
       for (const [index, title] of picked.entries()) {
         const suggestion = known.get(title) ?? { title, detail: "", prompt: "" }
-        await client.session.prompt({
-          sessionID,
-          text: composeTask(evidence, suggestion, { index: index + 1, total: picked.length }, extra),
-          ...(index === 0 ? {} : { delivery: "queue" }),
-        })
+        try {
+          await client.session.prompt({
+            sessionID,
+            text: composeTask(evidence, suggestion, { index: index + 1, total: picked.length }, extra),
+            ...(index === 0 ? {} : { delivery: "queue" }),
+          })
+          sent++
+        } catch (cause) {
+          // Ein gescheiterter Auftrag darf die uebrigen nicht verschlucken —
+          // und die Oberflaeche soll erfahren, wie weit es gekommen ist.
+          toast(
+            `Auftrag ${index + 1} von ${picked.length} nicht abgeschickt (${cause?.message ?? cause}) — ${
+              sent ? `${sent} sind unterwegs` : "nichts ging raus"
+            }`,
+            "warning",
+          )
+          break
+        }
       }
-      note({ action: "submitted", sessionID, count: picked.length })
+      note({ action: "submitted", sessionID, count: sent })
     }
 
     /**
@@ -2487,16 +2522,21 @@ export default {
         // einem einzigen Lauf verbraucht.
         const signature = await projectSignature(client, root)
         if (signature !== undefined) {
-          await writeProjectReport?.({
-            directory: root,
-            at: Date.now(),
-            signature,
-            scope: scopeKeys,
-            summary: report.summary,
-            suggestions: topped,
-            analysis,
-          })
-          note({ action: "report", sessionID, root, reused: false, files: files.length })
+          try {
+            await writeProjectReport?.({
+              directory: root,
+              at: Date.now(),
+              signature,
+              scope: scopeKeys,
+              summary: report.summary,
+              suggestions: topped,
+              analysis,
+            })
+            note({ action: "report", sessionID, root, reused: false, files: files.length })
+          } catch {
+            // Ohne Ablage wird beim naechsten Mal eben wieder gelesen. Die
+            // Vorschlaege sind schon da und duerfen daran nicht scheitern.
+          }
         }
 
         return await offerProject(sessionID, {
@@ -2535,7 +2575,9 @@ export default {
               toast("Open a session first", "warning")
               return
             }
-            void ask(sessionID, typeof input === "string" ? input.trim() || undefined : undefined)
+            void ask(sessionID, typeof input === "string" ? input.trim() || undefined : undefined).catch((cause) =>
+              toast(`Suggest fehlgeschlagen: ${cause?.message ?? cause}`, "error"),
+            )
           },
         },
         {
@@ -2551,7 +2593,9 @@ export default {
               toast("Open a session first", "warning")
               return
             }
-            void askProject(sessionID, typeof input === "string" ? input.trim() || undefined : undefined)
+            void askProject(sessionID, typeof input === "string" ? input.trim() || undefined : undefined).catch(
+              (cause) => toast(`Suggest fehlgeschlagen: ${cause?.message ?? cause}`, "error"),
+            )
           },
         },
       ],

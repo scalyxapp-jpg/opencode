@@ -18,7 +18,8 @@ import { fileURLToPath } from "node:url"
 const here = dirname(fileURLToPath(import.meta.url))
 const suites = readdirSync(here)
   .filter((name) => /^\d+-.+\.mjs$/.test(name))
-  .sort()
+  // Nach der Nummer sortieren, nicht nach dem Zeichen: sonst steht 10 vor 2.
+  .sort((left, right) => Number.parseInt(left, 10) - Number.parseInt(right, 10))
 
 /**
  * Die Suiten kopieren den Quelltext zum Importieren ins Systemverzeichnis; der
