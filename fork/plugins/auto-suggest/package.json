@@ -4,5 +4,8 @@
   "private": true,
   "type": "module",
   "description": "Suggests next work steps from the session's own tool evidence",
-  "main": "tui.js"
+  "main": "tui.js",
+  "scripts": {
+    "test": "node tests/run.mjs"
+  }
 }

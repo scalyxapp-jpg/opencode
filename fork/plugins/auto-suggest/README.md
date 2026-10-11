@@ -303,6 +303,54 @@ Belegen, sonst setzt das Modell den Verlauf fort, statt zu antworten.
 
 Der Formulartitel zeigt die Anzahl mit an: `Was als Nächstes? (7)`.
 
+## Prüfungen
+
+Im Ordner `fork/plugins/auto-suggest` liegen die Suiten unter `tests/` und laufen
+mit einem Befehl:
+
+```
+cd fork/plugins/auto-suggest
+bun run test
+```
+
+Der Befehl führt **alle** Suiten nacheinander aus (das Manifest ruft
+`node tests/run.mjs` auf) und endet mit einem von null verschiedenen
+Rückgabewert, sobald eine Prüfung fehlschlägt — auch dann, wenn eine Suite gar
+nicht erst startet. Am Ende steht die Summe:
+
+```
+ok   1-evidence.mjs  27 bestanden, 0 fehlgeschlagen
+ok   2-budget.mjs    48 bestanden, 0 fehlgeschlagen
+ok   3-forms.mjs     30 bestanden, 0 fehlgeschlagen
+ok   4-flow.mjs      83 bestanden, 0 fehlgeschlagen
+ok   5-answers.mjs   16 bestanden, 0 fehlgeschlagen
+ok   6-areas.mjs     54 bestanden, 0 fehlgeschlagen
+ok   7-report.mjs    62 bestanden, 0 fehlgeschlagen
+
+Summe: 320 bestanden, 0 fehlgeschlagen in 7 Suiten
+```
+
+| Suite            | Prüft                                                                                              |
+| ---------------- | -------------------------------------------------------------------------------------------------- |
+| `1-evidence.mjs` | Belege aus dem Verlauf, Prompt-Aufbau, Richtungen (`kind`)                                         |
+| `2-budget.mjs`   | Anzahl und Regeln der Vorschläge, Parser, Duplikate                                                |
+| `3-forms.mjs`    | Formular-Lebenszyklus, Warten auf die Auswahl, Auftragszuschnitt                                   |
+| `4-flow.mjs`     | `setup()` gegen einen Fake-Server: nichts passiert von selbst, ein Formular, eine Absendung, Wache |
+| `5-answers.mjs`  | Antworten, wie Modelle sie wirklich schicken: Codezäune, Prosa, abgebrochene Arrays, Maskierung    |
+| `6-areas.mjs`    | Bereichsfilter (`/nextProject Gui`), Pflichtbereiche, Rückfall                                     |
+| `7-report.mjs`   | Zwischenspeicher des Projektberichts: Frist, Baumkennzeichen, Abdeckung, sichtbarer Stand          |
+
+Die Suiten sind **rein lokal**. Sie lesen `tui.js` über den relativen Pfad
+`../tui.js`, kopieren den Quelltext zum Importieren ins Systemverzeichnis
+(`os.tmpdir()`, Dateiname mit Prozesskennung) und arbeiten sonst mit Fakes. Kein
+fester Pfad, kein Netz, kein Zugriff auf einen laufenden Server; die Suiten
+`1-evidence.mjs` bis `4-flow.mjs` löschen zusätzlich `NVIDIA_API_KEY` aus der
+Umgebung, damit kein Modellaufruf zustande kommt.
+
+Eine neue Suite anlegen heisst: Datei `N-thema.mjs` in `tests/` legen, am Ende
+`N bestanden, M fehlgeschlagen` melden und sich mit Fehler beenden, wenn `M`
+größer als null ist. Der Läufer findet sie über das Namensmuster von selbst.
+
 ## Unterschiede zur Fassung im TUI-Quellbaum
 
 |                             | Quellbaum            | Plugin                         |
