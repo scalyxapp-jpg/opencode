@@ -267,13 +267,6 @@ function buildPrompt(evidence, focus, seen, projectContext) {
   if (evidence.lastClaim) lines.push(`Letzte Aussage, wörtliches Zitat: ${JSON.stringify(evidence.lastClaim)}`)
   if (lines.length === 2) lines.push("Kaum verwertbare Arbeitsschritte im Verlauf.")
 
-  // Wenn ein Schnelldurchlauf über Schlüsseldateien ergänzt wurde, steht er
-  // vor den Belegen — so kann das Modell an frühere Entscheidungen und Bausteine
-  // anknüpfen, die der Evidenz-Window allein nicht mehr enthält.
-  if (projectContext) {
-    lines.push("", "PROJEKTDATEIEN (aus dem Verzeichnis der Sitzung):", projectContext)
-  }
-
   return [
     `AUFGABE: Schlage ${band} nächste Arbeiten vor, die aus dieser Session folgen.`,
     `Mehr als ${budget} werden es nie. Wird es weniger, dann nur, weil es nichts anderes mehr gibt: statt zu wiederholen oder leer zu antworten, geh tiefer in dieselben Belege.`,
@@ -305,6 +298,11 @@ function buildPrompt(evidence, focus, seen, projectContext) {
         : "",
     "",
     askedBlock(seen),
+    // Wenn ein Schnelldurchlauf über Schlüsseldateien ergänzt wurde, steht er
+    // VOR dem Hinweis auf die Belege — so kann das Modell an frühere
+    // Entscheidungen und Bausteine anknüpfen, die der Evidenz-Window allein
+    // nicht mehr enthält.
+    ...(projectContext ? ["", "PROJEKTDATEIEN (aus dem Verzeichnis der Sitzung):", projectContext] : []),
     "",
     "BELEGE (nur diese, keine Annahmen darüber hinaus):",
     lines.join("\n"),
@@ -1001,6 +999,31 @@ const PROJECT_SKIP_FILE =
   /\.(png|jpe?g|gif|webp|svg|ico|pdf|zip|gz|tgz|tar|7z|rar|mp3|mp4|mov|avi|wav|woff2?|ttf|otf|eot|so|dylib|dll|exe|bin|jar|class|o|a|lock|db|sqlite3?|wasm|map|snap)$/i
 const PROJECT_KEY_FILE =
   /(^|\/)(readme[^/]*|agents\.md|contributing[^/]*|changelog[^/]*|package\.json|pyproject\.toml|cargo\.toml|go\.mod|pom\.xml|build\.gradle(\.kts)?|composer\.json|gemfile|dockerfile|makefile|justfile|tsconfig\.json)$/i
+
+/**
+ * Bekannte Schlüssel-Dateien — feste Namen, nicht via Baumerkennung.
+ *
+ * Dient als Schnelldurchlauf für /next: ohne den ganzen Baum zu lesen, kommen
+ * ein paar Dateien mit viel Aussagekraft in den Kontext des Modells. Die Liste
+ * enthält nur Namen (keine Pfade), die im Wurzelverzeichnis gesucht werden;
+ * Unterordner wie packages/ oder src/ bleiben außen vor.
+ */
+const PROJECT_KEY_FILES = [
+  "README.md",
+  "README",
+  "AGENTS.md",
+  "CONTRIBUTING.md",
+  "CHANGELOG.md",
+  "package.json",
+  "pyproject.toml",
+  "Cargo.toml",
+  "go.mod",
+  "pom.xml",
+  "build.gradle.kts",
+  "Dockerfile",
+  "docker-compose.yml",
+  "tsconfig.json",
+]
 const PROJECT_LIMITS = { directories: 160, files: 500, keyFiles: 10, keyChars: 1800, treeChars: 14000, depth: 8 }
 
 // Wenn der erste Versuch am Umfang scheitert (der Anbieter antwortet etwa mit
@@ -2039,7 +2062,7 @@ export default {
       try {
         const root = await sessionDirectory(sessionID)
         if (root) {
-          for (const path of PROJECT_KEY_FILES.slice(0, 6)) {
+          for (const path of PROJECT_KEY_FILE.slice(0, 6)) {
             const content = await readProjectFile(client, root, path)
             if (content.trim()) projectContext += `\n--- ${path}\n${clip(content.trim(), 1200)}\n`
           }
