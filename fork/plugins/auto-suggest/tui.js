@@ -37,7 +37,7 @@
  * schliessen.
  */
 
-const EVIDENCE_WINDOW = 40
+const EVIDENCE_WINDOW = 120
 const MAX_FILES = 14
 const MAX_COMMANDS = 8
 const MAX_ASKS = 4
@@ -234,7 +234,7 @@ function collectEvidence(messages) {
 }
 
 /** Auftrag samt Belegblock. Die Anweisung steht vorne und wird hinten wiederholt. */
-function buildPrompt(evidence, focus, seen) {
+function buildPrompt(evidence, focus, seen, projectContext) {
   const { hint, areas } = focusParts(focus)
   const budget = areas.length ? Math.min(suggestionBudget(evidence), FILTER_SUGGESTIONS) : suggestionBudget(evidence)
   const band = budget === MIN_SUGGESTIONS ? `${MIN_SUGGESTIONS}` : `${MIN_SUGGESTIONS} bis ${budget}`
@@ -266,6 +266,13 @@ function buildPrompt(evidence, focus, seen) {
   }
   if (evidence.lastClaim) lines.push(`Letzte Aussage, wörtliches Zitat: ${JSON.stringify(evidence.lastClaim)}`)
   if (lines.length === 2) lines.push("Kaum verwertbare Arbeitsschritte im Verlauf.")
+
+  // Wenn ein Schnelldurchlauf über Schlüsseldateien ergänzt wurde, steht er
+  // vor den Belegen — so kann das Modell an frühere Entscheidungen und Bausteine
+  // anknüpfen, die der Evidenz-Window allein nicht mehr enthält.
+  if (projectContext) {
+    lines.push("", "PROJEKTDATEIEN (aus dem Verzeichnis der Sitzung):", projectContext)
+  }
 
   return [
     `AUFGABE: Schlage ${band} nächste Arbeiten vor, die aus dieser Session folgen.`,
@@ -2022,12 +2029,31 @@ export default {
       if (pending || !sessionID) return false
 
       const { evidence, grounded } = readEvidence(sessionID)
+
+      // Ein langer Verlauf liefert nur eine Stichprobe; hier wird er durch ein
+      // paar Schlüsseldateien ergänzt. Das sind dieselben Dateien, die auch
+      // /nextProject liest, aber in kleinem Umfang und mit weniger Tiefenwirkung —
+      // ein Schnelldurchlauf statt des ganzen Baumspaziergangs. So kommt das
+      // Modell mit mehr Anknüpfungspunkten als der reine Sessionverlauf bietet.
+      let projectContext = ""
+      try {
+        const root = await sessionDirectory(sessionID)
+        if (root) {
+          for (const path of PROJECT_KEY_FILES.slice(0, 6)) {
+            const content = await readProjectFile(client, root, path)
+            if (content.trim()) projectContext += `\n--- ${path}\n${clip(content.trim(), 1200)}\n`
+          }
+        }
+      } catch {
+        /* Schlüssel-Dateien sind hilfreich, aber kein Muss */
+      }
+
+      // Ohne jede Grundlage aus der Sitzung wird das Projekt gelesen.
       if (!grounded) {
-        // Kein Leerlauf: ohne Belege aus dieser Sitzung wird das Projekt
-        // gelesen. Die Sitzung kennt ihr Verzeichnis, also gibt es dort etwas.
         toast("Keine Belege in dieser Sitzung — lese stattdessen das Projekt", "info")
         return await askProject(sessionID, focus)
       }
+
       // Ein Argument, das einen Bereich benennt, wird zum Filter.
       const scope = focusParts(focus)
 
@@ -2058,7 +2084,7 @@ export default {
           try {
             return await client.session.generate({
               sessionID,
-              prompt: buildPrompt(evidence, focus, seen) + (strict ? strictReminder() : ""),
+              prompt: buildPrompt(evidence, focus, seen, projectContext) + (strict ? strictReminder() : ""),
             })
           } catch (cause) {
             toast(`Modell nicht erreichbar (${cause?.message ?? cause}) — Vorschläge aus den Belegen`, "warning")
