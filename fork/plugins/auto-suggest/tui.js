@@ -51,6 +51,11 @@ const MAX_SUGGESTIONS = 10
 // Vorschlaege dazu waeren Wiederholungen mit anderem Wortlaut.
 const FILTER_SUGGESTIONS = 5
 
+// Wie lange ein einmal gelesener Projektbericht gilt und wie viele Berichte
+// hoechstens aufgehoben werden (je Projektverzeichnis einer).
+const PROJECT_REPORT_TTL_MS = 5 * 60 * 1000
+const PROJECT_REPORT_MAX = 4
+
 const FILE_TOOLS = new Set(["read", "edit", "write", "patch", "glob", "grep"])
 const WRITE_TOOLS = new Set(["edit", "write", "patch"])
 const SHELL_TOOLS = new Set(["bash", "shell"])
@@ -756,6 +761,25 @@ async function listProjectDirectory(client, root, path) {
   }
 }
 
+/**
+ * Kennzeichen des Projektbaums, so billig wie moeglich.
+ *
+ * Nur die Wurzel wird aufgelistet — ein einziger Aufruf statt des ganzen
+ * Spaziergangs. Aendert sich dort etwas, ist der Bericht veraltet. Aenderungen
+ * tiefer im Baum deckt erst die Frist ab; das ist der bewusste Preis dafuer,
+ * dass ein zweiter Lauf nichts lesen muss.
+ *
+ * Ohne Antwort gibt es kein Kennzeichen — dann wird neu gelesen statt geraten.
+ */
+async function projectSignature(client, root) {
+  const entries = await listProjectDirectory(client, root, ".")
+  if (!entries.length) return undefined
+  return entries
+    .map((entry) => `${entry?.type === "directory" ? "d" : "f"} ${String(entry?.path ?? "").replace(/\/+$/, "")}`)
+    .sort()
+    .join("\n")
+}
+
 /** Den Dateibaum ab dem Projektverzeichnis einsammeln, verzeichnisweise. */
 async function readProjectTree(client, root, onProgress) {
   const files = []
@@ -1266,6 +1290,44 @@ function areaFallback(area) {
 }
 
 /**
+ * Deckt ein Bericht die gefragten Bereiche ab?
+ *
+ * Ohne Filter gelesen heisst: der Bericht enthaelt Vorschlaege aus allen
+ * Bereichen und deckt damit auch einen gefilterten Wunsch ab. Ein gefilterter
+ * Lauf bekommt dagegen nur Vorschlaege zu seinem Bereich — der Bericht deckt
+ * dann auch nur diesen ab. Wer danach breiter fragt, muss neu lesen; sonst
+ * kaemen Vorschlaege aus einem Bereich heraus, nach dem nie gefragt wurde.
+ */
+function reportCovers(entry, keys) {
+  const scope = entry?.scope ?? []
+  if (!scope.length) return true
+  if (!keys.length) return false
+  return keys.every((key) => scope.includes(key))
+}
+
+/** Alter eines Berichts in Worten. */
+function reportAge(at, now = Date.now()) {
+  const minutes = Math.floor(Math.max(0, now - at) / 60000)
+  if (minutes < 1) return "gerade eben"
+  if (minutes === 1) return "vor einer Minute"
+  if (minutes < 60) return `vor ${minutes} Minuten`
+  const hours = Math.floor(minutes / 60)
+  return hours === 1 ? "vor einer Stunde" : `vor ${hours} Stunden`
+}
+
+/**
+ * Der Stand, der im Formular und im Zusammenhang der Auftraege steht.
+ *
+ * Sichtbar, nicht versteckt: wer Vorschlaege aus einem zwischengespeicherten
+ * Bericht bekommt, soll das wissen — samt Alter.
+ */
+function reportStatus(entry, reused, now = Date.now()) {
+  const time = new Date(entry.at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
+  if (!reused) return `Projektbericht: neu gelesen ${time}`
+  return `Projektbericht: zwischengespeichert, aufgenommen ${time} (${reportAge(entry.at, now)})`
+}
+
+/**
  * Die Bereiche, auf die sich die Vorschlaege stuetzen duerfen.
  *
  * Ohne Filter kommen die erkannten Bereiche plus die Pflichtbereiche. Mit
@@ -1760,12 +1822,80 @@ export default {
     }
 
     /**
+     * Formular und Auftraege aus einem fertigen Projektbericht.
+     *
+     * Gilt fuer den frisch gelesenen und den zwischengespeicherten Bericht —
+     * nur die Vorschlaege und der Vermerk ueber den Stand unterscheiden sich.
+     * Der Filter wird nachgehalten, nicht erhofft: was nicht zum gefragten
+     * Bereich gehoert, faellt heraus. Liefert der Bericht dazu nichts, bleibt
+     * ein Vorschlag aus dem Bereich selbst — ein fremder waere die falsche
+     * Antwort auf die Frage.
+     */
+    async function offerProject(sessionID, input) {
+      const { root, analysis, listed, summary, evidence, scope, status } = input
+      const scopeKeys = scope.areas.map((area) => area.key)
+      const areas = selectAreas(analysis?.areas ?? [], analysis?.files ?? [], scopeKeys)
+      const budget = scopeKeys.length
+        ? Math.min(suggestionBudget(evidence), FILTER_SUGGESTIONS)
+        : suggestionBudget(evidence)
+      const filtered = filterByAreas(listed, scope.areas)
+      const fallback = scopeKeys
+        .map((key) => areas.find((area) => area.key === key) ?? scope.areas.find((area) => area.key === key))
+        .filter(Boolean)
+        .map(areaFallback)
+      const suggestions = ensureAreaSuggestions(filtered.length ? filtered : fallback, areas, budget).slice(
+        0,
+        MAX_SUGGESTIONS,
+      )
+
+      if (scopeKeys.length) {
+        toast(
+          `${scope.areas.map((area) => area.label).join(", ")}: ${suggestions.length} von ${listed.length} Vorschlägen`,
+          "info",
+        )
+      }
+      if (!suggestions.length) {
+        toast("Das Projekt gibt keinen nächsten Schritt her", "info")
+        return true
+      }
+
+      const count = analysis?.count ?? 0
+      const extra = [
+        `Projektverzeichnis: ${root}`,
+        `Gelesene Projektdateien: ${count}`,
+        scopeKeys.length ? `Gefragter Bereich: ${scope.areas.map((area) => area.label).join(", ")}` : "",
+        status,
+        summary ? `Projektübersicht: ${summary}` : "",
+      ].filter(Boolean)
+
+      const formID = await openSuggestionForm(sessionID, {
+        suggestions,
+        title: scopeKeys.length
+          ? `${scope.areas.map((area) => area.label).join(", ")} — nächste Schritte (${suggestions.length})`
+          : `Nächste Schritte im Projekt (${suggestions.length})`,
+        // Der Stand gehoert sichtbar ins Formular: wer Vorschlaege aus einem
+        // zwischengespeicherten Bericht bekommt, soll das wissen.
+        message: [status, summary ? clip(summary, 400) : `Projektüberblick über ${count} Dateien`]
+          .filter(Boolean)
+          .join("\n"),
+      })
+      if (!formID) return false
+
+      const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true, removed: 0 }
+      if (!sole.owned) return true
+      await submitSelection(sessionID, sole, suggestions, evidence, extra)
+      return true
+    }
+
+    /**
      * Vorschlaege aus dem ganzen Projekt statt nur aus dieser Session.
      *
-     * Liest den Baum ab dem Projektverzeichnis, dazu die wenigen Dateien, die
-     * ueber das Projekt am meisten sagen, laesst beides zusammenfassen und baut
-     * daraus die Vorschlaege. Weil das dauert, meldet jeder Schritt seinen
-     * Fortschritt.
+     * Einmal lesen, mehrfach nutzen: der Bericht des letzten Laufs wird
+     * innerhalb der Frist wiederverwendet, solange das Kennzeichen des Baums
+     * stimmt und der Bericht den gefragten Bereich abdeckt. Dann wird nur noch
+     * gefiltert — Baum, Schluesseldateien und Merkmale bleiben ungelesen.
+     * Sonst wird gelesen wie bisher: erst der Baum, dann die Schluesseldateien,
+     * dann die Merkmale, jeder Schritt mit Fortschritt.
      */
     async function askProject(sessionID, focus) {
       if (pending || !sessionID) return false
@@ -1783,6 +1913,27 @@ export default {
       const scopeKeys = scope.areas.map((area) => area.key)
       pending = true
       try {
+        // Wiederverwenden, wenn der Bericht jung genug ist, den gefragten
+        // Bereich abdeckt und der Baum unveraendert steht. Geprueft wird nur die
+        // Wurzel: ein Aufruf statt des ganzen Spaziergangs.
+        const cached = readProjectReport?.(root)
+        if (cached && Date.now() - cached.at <= PROJECT_REPORT_TTL_MS && reportCovers(cached, scopeKeys)) {
+          const signature = await projectSignature(client, root)
+          if (signature !== undefined && signature === cached.signature) {
+            toast(`Projektbericht wiederverwendet (${reportAge(cached.at)}) — ${root}`, "info")
+            note({ action: "report", sessionID, root, reused: true, at: cached.at })
+            return await offerProject(sessionID, {
+              root,
+              analysis: cached.analysis,
+              listed: technicalOnly(cached.suggestions ?? [], evidence),
+              summary: cached.summary,
+              evidence,
+              scope,
+              status: reportStatus(cached, true),
+            })
+          }
+        }
+
         toast(`Projekt lesen: ${root}`, "info")
         const files = await readProjectTree(client, root, (directories, count) => {
           if ((directories + count) % 10 !== 0) return
@@ -1825,52 +1976,37 @@ export default {
         }
 
         const report = generated ? parseProjectReport(generated?.text ?? generated) : { summary: "", suggestions: [] }
-        const areas = selectAreas(analysis.areas, analysis.files, scopeKeys)
-        const budget = scopeKeys.length
-          ? Math.min(suggestionBudget(evidence), FILTER_SUGGESTIONS)
-          : suggestionBudget(evidence)
         const listed = technicalOnly(
           report.suggestions.length ? report.suggestions : projectFallback(files, evidence),
           evidence,
         )
-        // Der Filter wird nachgehalten, nicht erhofft: was nicht zum gefragten
-        // Bereich gehoert, faellt hier heraus. Liefert das Modell dazu nichts,
-        // bleibt als letzter Halt ein Vorschlag aus dem Bereich selbst — ein
-        // fremder Vorschlag waere die falsche Antwort auf die Frage.
-        const filtered = filterByAreas(listed, scope.areas)
-        const chosen = filtered.length ? filtered : scope.areas.map(areaFallback)
-        const suggestions = ensureAreaSuggestions(chosen, areas, budget).slice(0, MAX_SUGGESTIONS)
-        if (scope.areas.length) {
-          toast(
-            `${scope.areas.map((area) => area.label).join(", ")}: ${suggestions.length} von ${listed.length} Vorschlägen`,
-            "info",
-          )
-        }
-        if (!suggestions.length) {
-          toast("Das Projekt gibt keinen nächsten Schritt her", "info")
-          return true
+
+        // Bericht ablegen, damit der naechste Lauf nicht wieder liest. Nur mit
+        // gueltigem Kennzeichen: ohne Kennzeichen waere er nicht pruefbar und
+        // damit wertlos.
+        const signature = await projectSignature(client, root)
+        if (signature !== undefined) {
+          await writeProjectReport?.({
+            directory: root,
+            at: Date.now(),
+            signature,
+            scope: scopeKeys,
+            summary: report.summary,
+            suggestions: listed,
+            analysis,
+          })
+          note({ action: "report", sessionID, root, reused: false, files: files.length })
         }
 
-        const extra = [
-          `Projektverzeichnis: ${root}`,
-          `Gelesene Projektdateien: ${files.length}`,
-          scope.areas.length ? `Gefragter Bereich: ${scope.areas.map((area) => area.label).join(", ")}` : "",
-          report.summary ? `Projektübersicht: ${report.summary}` : "",
-        ].filter(Boolean)
-
-        const formID = await openSuggestionForm(sessionID, {
-          suggestions,
-          title: scope.areas.length
-            ? `${scope.areas.map((area) => area.label).join(", ")} — nächste Schritte (${suggestions.length})`
-            : `Nächste Schritte im Projekt (${suggestions.length})`,
-          message: report.summary ? clip(report.summary, 400) : `Projektüberblick über ${files.length} Dateien`,
+        return await offerProject(sessionID, {
+          root,
+          analysis,
+          listed,
+          summary: report.summary,
+          evidence,
+          scope,
+          status: reportStatus({ at: Date.now() }, false),
         })
-        if (!formID) return false
-
-        const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true, removed: 0 }
-        if (!sole.owned) return true
-        await submitSelection(sessionID, sole, suggestions, evidence, extra)
-        return true
       } catch (cause) {
         toast(String(cause?.message ?? cause), "error")
         return false
@@ -1917,6 +2053,25 @@ export default {
         },
       ],
     }))
+
+    // Zwischenspeicher fuer den Projektbericht. Er liegt neben der Spur (eigener
+    // Schluessel, eigene Datei) und haelt je Projektverzeichnis den zuletzt
+    // gelesenen Bericht samt Kennzeichen des Baums.
+    let readProjectReport
+    let writeProjectReport
+    try {
+      const [reports, updateReports] = storage.store("project-report", { initial: { entries: [] } })
+      readProjectReport = (directory) => (reports.entries ?? []).find((entry) => entry?.directory === directory)
+      writeProjectReport = (entry) =>
+        updateReports((draft) => {
+          draft.entries = [entry, ...(draft.entries ?? []).filter((item) => item?.directory !== entry.directory)].slice(
+            0,
+            PROJECT_REPORT_MAX,
+          )
+        })
+    } catch {
+      /* ohne Ablage kein Zwischenspeicher: dann wird eben jedes Mal gelesen */
+    }
 
     // Spurensicherung: was das Plugin bei welcher Runde entschieden hat
     // (begrenzt). Das Serverlog taugt dafuer nicht — es protokolliert nur

@@ -146,6 +146,42 @@ im Formular (als `metadata.message`) und wandert zusätzlich in den
 Zusammenhang jedes Auftrags, damit der Agent weiß, worauf er sich bezieht.
 Scheitert die Abfrage, greifen wie bei `/next` die belegbasierten Vorschläge.
 
+### Der Projektbericht wird zwischengespeichert
+
+Der Bericht wird neben der Spur abgelegt (`plugin.auto-suggest.project-report.json`,
+eigener Schlüssel `project-report`, höchstens vier Berichte — einer je
+Projektverzeichnis). Er enthält das Verzeichnis, die Aufnahmezeit, das
+Kennzeichen des Baums, den gefragten Bereich, die Übersicht des Modells, die
+Vorschläge und den vollständigen Bericht aus `analyzeProject`.
+
+Ein zweiter Lauf innerhalb von **fünf Minuten** liest nichts mehr: er
+verwendet den Bericht und filtert ihn nur noch nach dem mitgegebenen Bereich.
+Übersprungen werden der ganze Baumspaziergang (bis zu 160 Verzeichnisse, 500
+Dateien), die Schlüsseldateien und die Merkmale aus den Quellen — und die
+Abfrage beim Modell. Es bleibt **ein einziger Aufruf**: die Wurzel des Projekts
+wird aufgelistet, um zu sehen, ob der Baum noch steht.
+
+Neu gelesen wird, wenn
+
+- kein Bericht vorliegt,
+- die Frist abgelaufen ist (fünf Minuten),
+- das Kennzeichen des Baums nicht mehr stimmt (etwas in der Wurzel ist
+  hinzugekommen, umbenannt oder weggefallen),
+- der Bericht den gefragten Bereich nicht abdeckt. Ein Lauf **ohne** Filter
+  deckt jeden Bereich ab; ein Lauf **mit** Filter deckt nur seinen eigenen ab —
+  wer danach breiter fragt, liest neu, statt Vorschläge aus einem Bereich
+  vorzulegen, nach dem nie gefragt wurde.
+
+Der Stand ist sichtbar, nicht versteckt: das Formular trägt über der Übersicht
+`Projektbericht: neu gelesen 14:32` oder
+`Projektbericht: zwischengespeichert, aufgenommen 14:32 (vor 3 Minuten)`, und
+dieselbe Zeile steht im Zusammenhang jedes abgeschickten Auftrags.
+
+Was das nicht leistet: geprüft wird nur die Wurzel, nicht der ganze Baum.
+Änderungen tief in der Ablage erkennt erst die Frist — das ist der bewusste
+Preis dafür, dass ein zweiter Lauf gar nichts lesen muss. Wer sichergehen will,
+wartet die fünf Minuten ab oder ruft nach einer Änderung einmal neu auf.
+
 ### Es öffnet sich nichts von selbst
 
 Vorschläge kommen **ausschließlich** über `/next` (oder den Befehl
