@@ -380,6 +380,79 @@ function normalizeSuggestions(items) {
 }
 
 /** Drei Stufen, weil Modelle sich nicht zuverlässig an ein Format halten. */
+function toSuggestion(item) {
+  if (typeof item === "string")
+    return item.trim() ? { title: clip(item.trim(), 120), detail: "", prompt: "" } : undefined
+  if (!item || typeof item !== "object") return undefined
+  const title = String(item.title ?? item.name ?? item.step ?? item.titel ?? "").trim()
+  if (!title) return undefined
+  const kind = kindOf(item.kind ?? item.lens ?? item.group ?? item.art ?? item.richtung)
+  const detail = String(item.detail ?? item.reason ?? item.why ?? item.details ?? item.begruendung ?? "").trim()
+  const prompt = String(item.prompt ?? item.task ?? item.auftrag ?? "").trim()
+  const area = String(item.area ?? item.bereich ?? "")
+    .trim()
+    .toLowerCase()
+  return {
+    title: clip(title, 120),
+    detail: withKind(kind, detail),
+    prompt: clip(prompt, 1200),
+    ...(area ? { area } : {}),
+  }
+}
+
+/**
+ * Vorschlaege aus einer abgeschnittenen Antwort retten.
+ *
+ * Modelle brechen bei langen Antworten mitten im Array ab; dann fehlt die
+ * schliessende Klammer, und `JSON.parse` scheitert am Ganzen — obwohl die
+ * einzelnen Eintraege vollstaendig dastehen. Hier wird Zeichen fuer Zeichen
+ * nach vollstaendigen Objekten gesucht und jedes einzeln gelesen. Klammern in
+ * Zeichenketten zaehlen dabei nicht mit.
+ */
+function salvageSuggestions(text) {
+  const items = []
+  let depth = 0
+  let start = -1
+  let inString = false
+  let escaped = false
+
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === "\\") {
+      if (inString) escaped = true
+      continue
+    }
+    if (char === '"') {
+      inString = !inString
+      continue
+    }
+    if (inString) continue
+    if (char === "{") {
+      if (depth === 0) start = index
+      depth++
+      continue
+    }
+    if (char === "}") {
+      depth--
+      if (depth === 0 && start !== -1) {
+        try {
+          items.push(JSON.parse(text.slice(start, index + 1)))
+        } catch {
+          /* einzelnes Objekt unvollstaendig */
+        }
+        start = -1
+      }
+      if (depth < 0) depth = 0
+    }
+  }
+
+  return normalizeSuggestions(items.map(toSuggestion).filter(Boolean))
+}
+
 function parseSuggestions(raw) {
   const text = String(raw ?? "").trim()
   if (!text) return []
@@ -390,27 +463,16 @@ function parseSuggestions(raw) {
     try {
       const parsed = JSON.parse(candidate)
       if (Array.isArray(parsed)) {
-        const items = parsed
-          .map((item) => {
-            if (typeof item === "string") return item.trim() ? { title: clip(item.trim(), 120), detail: "" } : undefined
-            if (!item || typeof item !== "object") return undefined
-            const title = String(item.title ?? item.name ?? item.step ?? "").trim()
-            if (!title) return undefined
-            const kind = kindOf(item.kind ?? item.lens ?? item.group)
-            const detail = String(item.detail ?? item.reason ?? item.why ?? "").trim()
-            const prompt = String(item.prompt ?? item.task ?? item.auftrag ?? "").trim()
-            const area = String(item.area ?? item.bereich ?? "")
-              .trim()
-              .toLowerCase()
-            return {
-              title: clip(title, 120),
-              detail: withKind(kind, detail),
-              prompt: clip(prompt, 1200),
-              ...(area ? { area } : {}),
-            }
-          })
-          .filter(Boolean)
+        const items = parsed.map(toSuggestion).filter(Boolean)
         if (items.length) return normalizeSuggestions(items)
+      }
+      // Manche Modelle verpacken die Liste in ein Objekt.
+      if (parsed && !Array.isArray(parsed) && typeof parsed === "object") {
+        for (const key of ["suggestions", "vorschlaege", "vorschläge", "items", "results"]) {
+          if (!Array.isArray(parsed[key])) continue
+          const items = parsed[key].map(toSuggestion).filter(Boolean)
+          if (items.length) return normalizeSuggestions(items)
+        }
       }
     } catch {
       /* nächste Stufe */
@@ -436,6 +498,10 @@ function parseSuggestions(raw) {
     const normalized = normalizeSuggestions(items)
     if (normalized.length) return normalized
   }
+
+  // Letzte Stufe vor dem Rohtext: eine abgebrochene Antwort retten.
+  const salvaged = salvageSuggestions(text)
+  if (salvaged.length) return salvaged
 
   return normalizeSuggestions([{ title: clip(text, 120), detail: "" }])
 }
