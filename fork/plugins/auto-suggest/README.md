@@ -345,7 +345,8 @@ Die Suiten sind **rein lokal**. Sie lesen `tui.js` über den relativen Pfad
 (`os.tmpdir()`, Dateiname mit Prozesskennung) und arbeiten sonst mit Fakes. Kein
 fester Pfad, kein Netz, kein Zugriff auf einen laufenden Server; die Suiten
 `1-evidence.mjs` bis `4-flow.mjs` löschen zusätzlich `NVIDIA_API_KEY` aus der
-Umgebung, damit kein Modellaufruf zustande kommt.
+Umgebung, damit kein Modellaufruf zustande kommt. Der Läufer räumt die
+Zwischendateien nach jeder Suite wieder weg.
 
 Eine neue Suite anlegen heisst: Datei `N-thema.mjs` in `tests/` legen, am Ende
 `N bestanden, M fehlgeschlagen` melden und sich mit Fehler beenden, wenn `M`

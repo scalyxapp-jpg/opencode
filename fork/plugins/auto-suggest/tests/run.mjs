@@ -10,7 +10,8 @@
 // Jede Suite meldet am Ende "N bestanden, M fehlgeschlagen" und beendet sich
 // selbst mit Fehler, sobald M größer als null ist.
 import { spawnSync } from "node:child_process"
-import { readdirSync } from "node:fs"
+import { readdirSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -19,9 +20,28 @@ const suites = readdirSync(here)
   .filter((name) => /^\d+-.+\.mjs$/.test(name))
   .sort()
 
+/**
+ * Die Suiten kopieren den Quelltext zum Importieren ins Systemverzeichnis; der
+ * Dateiname traegt die Prozesskennung. Nach dem Lauf gehoert das wieder weg —
+ * sonst sammelt sich dort mit jedem Durchgang dieselbe Datei erneut an.
+ */
+function cleanStaged(name, pid) {
+  const base = `auto-suggest-${name.replace(/\.mjs$/, "")}`
+  const suffix = `-${pid}.mjs`
+  for (const entry of readdirSync(tmpdir())) {
+    if (!entry.startsWith(base) || !entry.endsWith(suffix)) continue
+    try {
+      rmSync(join(tmpdir(), entry), { force: true })
+    } catch {
+      /* Nicht loeschbar ist kein Grund, den Lauf zu verwerfen. */
+    }
+  }
+}
+
 const rows = []
 for (const name of suites) {
   const result = spawnSync(process.execPath, [join(here, name)], { encoding: "utf8", timeout: 600_000 })
+  cleanStaged(name, result.pid)
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`
   const summary = /(\d+) bestanden, (\d+) fehlgeschlagen/.exec(output)
   const ok = result.status === 0 && summary !== null
