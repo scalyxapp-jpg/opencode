@@ -172,6 +172,10 @@ Neu gelesen wird, wenn
   wer danach breiter fragt, liest neu, statt Vorschläge aus einem Bereich
   vorzulegen, nach dem nie gefragt wurde.
 
+Angezeigt wird aus dem Bericht nur, was noch nicht dran war (siehe „Nie zweimal
+dasselbe"): ist er für den gefragten Bereich abgegrast, wird gelesen und neu
+gefragt.
+
 Der Stand ist sichtbar, nicht versteckt: das Formular trägt über der Übersicht
 `Projektbericht: neu gelesen 14:32` oder
 `Projektbericht: zwischengespeichert, aufgenommen 14:32 (vor 3 Minuten)`, und
@@ -181,6 +185,42 @@ Was das nicht leistet: geprüft wird nur die Wurzel, nicht der ganze Baum.
 Änderungen tief in der Ablage erkennt erst die Frist — das ist der bewusste
 Preis dafür, dass ein zweiter Lauf gar nichts lesen muss. Wer sichergehen will,
 wartet die fünf Minuten ab oder ruft nach einer Änderung einmal neu auf.
+
+### Nie zweimal dasselbe
+
+Aufeinanderfolgende Läufe zeigen nie dieselben Vorschläge. Drei Stufen halten
+das:
+
+1. **Das Modell wird informiert.** Der Auftrag enthält unter
+   `BEREITS VORGESCHLAGEN` jeden Titel, den diese Sitzung bzw. dieses Projekt
+   schon gesehen hat — mit der Regel, dass derselbe Gedanke mit anderen Worten
+   als Wiederholung gilt und eine Wiederholung immer falsch ist.
+2. **Nachgehalten wird trotzdem.** Nach der Antwort fliegt heraus, was schon
+   dastand. Verglichen werden nicht nur gleiche Titel, sondern auch gleiche
+   Worte in anderer Reihenfolge und derselbe Kern mit einem Anhang: „Tests für
+   src/a.ts" und „Tests für src/a.ts nachziehen" sind derselbe Vorschlag, nicht
+   zwei.
+3. **Wenn nichts Neues kommt, wird nachgefragt.** Enthielt die Antwort nur
+   Bekanntes, geht einmal ein Auftrag mit Nachdruck hinaus. Hilft auch das
+   nicht, treten die belegbasierten Vorschläge an ihre Stelle — ebenfalls
+   gefiltert auf das, was noch nicht dran war.
+
+Gezeigt heisst gemerkt: die Titel wandern erst dann in die Ablage
+(`plugin.auto-suggest.asked.json`, je Sitzung und je Projektverzeichnis, die
+letzten 80 Titel), wenn das Formular stehen bleibt. Gibt es am Ende nichts
+Neues, gibt es **kein** Formular, sondern den Hinweis „Nichts Neues" — eine
+Wiederholung wäre keine Antwort.
+
+Für die Pflichtbereiche Oberfläche und Architektur gibt es je vier Wortlaute,
+die der Reihe nach verbraucht werden. Sind alle dagewesen und liefert das Modell
+dazu nichts Neues, bleibt der Bereich leer: lieber kein Pflichtvorschlag als
+derselbe zum zweiten Mal.
+
+Aus dem Zwischenspeicher kommt ebenfalls nur Neues — ein Lauf übernimmt aus dem
+Bericht ausschließlich Vorschläge, die noch nicht gezeigt wurden. Ist der
+Bericht für den gefragten Bereich abgegrast, wird gelesen und neu gefragt. Das
+ist der Grund, warum der Bericht mehr aufbewahrt, als ein Lauf zeigt: der Rest
+kommt beim nächsten Mal als etwas Neues heraus.
 
 ### Es öffnet sich nichts von selbst
 
@@ -322,23 +362,25 @@ nicht erst startet. Am Ende steht die Summe:
 ok   1-evidence.mjs  27 bestanden, 0 fehlgeschlagen
 ok   2-budget.mjs    48 bestanden, 0 fehlgeschlagen
 ok   3-forms.mjs     30 bestanden, 0 fehlgeschlagen
-ok   4-flow.mjs      83 bestanden, 0 fehlgeschlagen
+ok   4-flow.mjs      88 bestanden, 0 fehlgeschlagen
 ok   5-answers.mjs   16 bestanden, 0 fehlgeschlagen
 ok   6-areas.mjs     54 bestanden, 0 fehlgeschlagen
-ok   7-report.mjs    62 bestanden, 0 fehlgeschlagen
+ok   7-report.mjs    57 bestanden, 0 fehlgeschlagen
+ok   8-repeats.mjs   37 bestanden, 0 fehlgeschlagen
 
-Summe: 320 bestanden, 0 fehlgeschlagen in 7 Suiten
+Summe: 357 bestanden, 0 fehlgeschlagen in 8 Suiten
 ```
 
-| Suite            | Prüft                                                                                              |
-| ---------------- | -------------------------------------------------------------------------------------------------- |
-| `1-evidence.mjs` | Belege aus dem Verlauf, Prompt-Aufbau, Richtungen (`kind`)                                         |
-| `2-budget.mjs`   | Anzahl und Regeln der Vorschläge, Parser, Duplikate                                                |
-| `3-forms.mjs`    | Formular-Lebenszyklus, Warten auf die Auswahl, Auftragszuschnitt                                   |
-| `4-flow.mjs`     | `setup()` gegen einen Fake-Server: nichts passiert von selbst, ein Formular, eine Absendung, Wache |
-| `5-answers.mjs`  | Antworten, wie Modelle sie wirklich schicken: Codezäune, Prosa, abgebrochene Arrays, Maskierung    |
-| `6-areas.mjs`    | Bereichsfilter (`/nextProject Gui`), Pflichtbereiche, Rückfall                                     |
-| `7-report.mjs`   | Zwischenspeicher des Projektberichts: Frist, Baumkennzeichen, Abdeckung, sichtbarer Stand          |
+| Suite            | Prüft                                                                                                                  |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `1-evidence.mjs` | Belege aus dem Verlauf, Prompt-Aufbau, Richtungen (`kind`)                                                             |
+| `2-budget.mjs`   | Anzahl und Regeln der Vorschläge, Parser, Duplikate                                                                    |
+| `3-forms.mjs`    | Formular-Lebenszyklus, Warten auf die Auswahl, Auftragszuschnitt                                                       |
+| `4-flow.mjs`     | `setup()` gegen einen Fake-Server: nichts passiert von selbst, ein Formular, eine Absendung, Wache, keine Wiederholung |
+| `5-answers.mjs`  | Antworten, wie Modelle sie wirklich schicken: Codezäune, Prosa, abgebrochene Arrays, Maskierung                        |
+| `6-areas.mjs`    | Bereichsfilter (`/nextProject Gui`), Pflichtbereiche, Rückfall                                                         |
+| `7-report.mjs`   | Zwischenspeicher des Projektberichts: Frist, Baumkennzeichen, Abdeckung, sichtbarer Stand, nur Neues aus dem Bericht   |
+| `8-repeats.mjs`  | Wiederholungssperre: Titelvergleich, was dem Modell gesagt wird, Wortlaute der Pflichtbereiche                         |
 
 Die Suiten sind **rein lokal**. Sie lesen `tui.js` über den relativen Pfad
 `../tui.js`, kopieren den Quelltext zum Importieren ins Systemverzeichnis

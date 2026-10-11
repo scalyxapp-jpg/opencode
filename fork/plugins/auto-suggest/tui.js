@@ -56,6 +56,12 @@ const FILTER_SUGGESTIONS = 5
 const PROJECT_REPORT_TTL_MS = 5 * 60 * 1000
 const PROJECT_REPORT_MAX = 4
 
+// Was schon vorgeschlagen wurde, wird nicht noch einmal vorgeschlagen. Je
+// Sitzung und je Projektverzeichnis werden die letzten Titel gehalten; die Zahl
+// der Schluessel ist begrenzt, damit die Ablage nicht unbegrenzt waechst.
+const ASKED_MAX = 80
+const ASKED_KEYS = 24
+
 const FILE_TOOLS = new Set(["read", "edit", "write", "patch", "glob", "grep"])
 const WRITE_TOOLS = new Set(["edit", "write", "patch"])
 const SHELL_TOOLS = new Set(["bash", "shell"])
@@ -228,7 +234,7 @@ function collectEvidence(messages) {
 }
 
 /** Auftrag samt Belegblock. Die Anweisung steht vorne und wird hinten wiederholt. */
-function buildPrompt(evidence, focus) {
+function buildPrompt(evidence, focus, seen) {
   const { hint, areas } = focusParts(focus)
   const budget = areas.length ? Math.min(suggestionBudget(evidence), FILTER_SUGGESTIONS) : suggestionBudget(evidence)
   const band = budget === MIN_SUGGESTIONS ? `${MIN_SUGGESTIONS}` : `${MIN_SUGGESTIONS} bis ${budget}`
@@ -290,6 +296,8 @@ function buildPrompt(evidence, focus) {
       : hint
         ? `8. Besonderes Augenmerk: ${hint}`
         : "",
+    "",
+    askedBlock(seen),
     "",
     "BELEGE (nur diese, keine Annahmen darüber hinaus):",
     lines.join("\n"),
@@ -396,6 +404,114 @@ function normalizeSuggestions(items) {
     if (unique.length === MAX_SUGGESTIONS) break
   }
   return unique
+}
+
+/**
+ * Worte eines Titels, vergleichbar gemacht.
+ *
+ * Kleingeschrieben, Fuellwoerter weg, Satzzeichen an den Raendern weg — Pfade
+ * wie `src/a.ts` bleiben aber ein einziges Wort. Sonst gaelten "Tests fuer
+ * src/a.ts" und "Tests fuer src/b.ts" als dieselbe Arbeit.
+ */
+const TITLE_STOP = new Set([
+  "für",
+  "fuer",
+  "und",
+  "der",
+  "die",
+  "das",
+  "den",
+  "dem",
+  "mit",
+  "von",
+  "im",
+  "in",
+  "auf",
+  "aus",
+  "zur",
+  "zum",
+  "ein",
+  "eine",
+  "einen",
+  "ohne",
+  "als",
+  "ist",
+  "sind",
+  "nach",
+  "vor",
+  "bei",
+  "über",
+  "ueber",
+  "am",
+  "an",
+  "des",
+])
+
+function titleTokens(title) {
+  return String(title ?? "")
+    .toLowerCase()
+    .split(/\s+/)
+    .map((word) => word.replace(/^[^\p{L}\p{N}/._-]+|[^\p{L}\p{N}/._-]+$/gu, ""))
+    .filter((word) => word.length > 1 && !TITLE_STOP.has(word))
+}
+
+/**
+ * Ist das dieselbe Arbeit?
+ *
+ * Gleiche Worte in anderer Reihenfolge oder derselbe Kern mit einem Anhang
+ * gelten als Wiederholung: "Tests für src/a.ts" und "Tests für src/a.ts
+ * nachziehen" sind derselbe Vorschlag, nicht zwei.
+ */
+function sameWork(left, right) {
+  const a = new Set(titleTokens(left))
+  const b = new Set(titleTokens(right))
+  if (!a.size || !b.size) return false
+  if ([...a].every((token) => b.has(token)) && a.size === b.size) return true
+  const [small, big] = a.size <= b.size ? [a, b] : [b, a]
+  if (small.size < 2) return false
+  if (![...small].every((token) => big.has(token))) return false
+  return small.size / big.size >= 0.6
+}
+
+/** Steht dieser Vorschlag schon in der Liste des Schon-gefragt? */
+function isRepeat(title, seen) {
+  const key = titleTokens(title).join(" ")
+  if (!key) return false
+  return (seen ?? []).some((entry) => titleTokens(entry).join(" ") === key || sameWork(title, entry))
+}
+
+/** Nur was es so noch nicht gab. */
+function freshSuggestions(suggestions, seen) {
+  return (suggestions ?? []).filter((suggestion) => !isRepeat(suggestion?.title, seen))
+}
+
+/**
+ * Der Block, der dem Modell sagt, was es nicht wiederholen darf.
+ *
+ * Ohne ihn schlaegt ein Modell bei gleichem Zusammenhang gern dasselbe vor —
+ * der Verlauf ist ja derselbe. Mit ihm wandert die Liste des Schon-gefragt in
+ * den Auftrag.
+ */
+function askedBlock(seen) {
+  const list = (seen ?? []).filter(Boolean)
+  if (!list.length) return ""
+  return [
+    "",
+    "BEREITS VORGESCHLAGEN (in dieser Sitzung oder für dieses Projekt — nichts davon erneut anbieten):",
+    ...list.map((title) => `  - ${title}`),
+    "Jeder neue Vorschlag ist eine andere Arbeit als alles oben Genannte. Derselbe Gedanke mit anderen Worten gilt als Wiederholung.",
+    "Wenn dir nichts anderes einfällt, liefere weniger oder eine leere Liste. Eine Wiederholung ist immer falsch.",
+  ].join("\n")
+}
+
+/** Der Nachdruck, wenn die erste Antwort nur Bekanntes enthielt. */
+function strictReminder() {
+  return [
+    "",
+    "ACHTUNG: Deine Liste enthielt nur Vorschläge, die oben unter BEREITS VORGESCHLAGEN stehen.",
+    "Antworte jetzt ausschließlich mit Arbeiten, die dort nicht stehen — andere Bausteine, andere Dateien,",
+    "andere Anwendungsfälle. Wenn es nichts anderes gibt, antworte mit einem leeren Array.",
+  ].join("\n")
 }
 
 /** Drei Stufen, weil Modelle sich nicht zuverlässig an ein Format halten. */
@@ -1147,15 +1263,41 @@ const AREA_TEMPLATES = {
   gui: {
     kind: "Erweitern",
     title: "Oberfläche um einen Bedienweg erweitern",
+    variants: [
+      "Oberfläche um eine neue Ansicht erweitern",
+      "Oberfläche um eine bessere Rückmeldung erweitern",
+      "Oberfläche um einen weiteren Bedienweg erweitern",
+    ],
     lead: "Die Oberfläche besteht aus",
     tail: "Eine neue Ansicht oder ein neuer Bedienweg baut darauf auf.",
   },
   architecture: {
     kind: "Erweitern",
     title: "Architektur um einen Baustein erweitern",
+    variants: [
+      "Architektur um eine Schicht erweitern",
+      "Architektur um eine klarere Grenze erweitern",
+      "Architektur um einen weiteren Baustein erweitern",
+    ],
     lead: "Die Struktur des Projekts zeigt",
     tail: "Ein neuer Baustein oder eine klarere Grenze zwischen den Teilen baut darauf auf.",
   },
+}
+
+/**
+ * Die Vorlage eines Pflichtbereichs, aber ohne Wiederholung.
+ *
+ * Der erste freie Wortlaut gewinnt. Sind alle Varianten schon dagewesen, gibt es
+ * keine Vorlage — dann bleibt der Bereich lieber leer, als denselben Vorschlag
+ * ein zweites Mal zu zeigen. Ein wiederholter Vorschlag ist wertlos, auch wenn
+ * er einen Pflichtbereich abdeckt.
+ */
+function areaTemplate(area, seen) {
+  const template = AREA_TEMPLATES[area?.key]
+  if (!template) return undefined
+  const title = [template.title, ...(template.variants ?? [])].find((candidate) => !isRepeat(candidate, seen))
+  if (!title) return undefined
+  return { ...template, title }
 }
 
 /**
@@ -1384,7 +1526,7 @@ function detectAreas(files) {
  * einer, wird er aus den erkannten Dateien gebaut; das Modell darf ihn nicht
  * wegfallen lassen.
  */
-function ensureAreaSuggestions(suggestions, areas, budget) {
+function ensureAreaSuggestions(suggestions, areas, budget, seen) {
   const list = [...suggestions]
   const hasArea = (key) =>
     list.some(
@@ -1403,7 +1545,7 @@ function ensureAreaSuggestions(suggestions, areas, budget) {
   const guaranteed = []
   for (const area of areas) {
     if (!area.mandatory || hasArea(area.key)) continue
-    const template = AREA_TEMPLATES[area.key]
+    const template = areaTemplate(area, seen)
     if (!template) continue
     guaranteed.push({
       area: area.key,
@@ -1420,7 +1562,7 @@ function ensureAreaSuggestions(suggestions, areas, budget) {
   return [...list.slice(0, Math.max(0, budget - guaranteed.length)), ...guaranteed].slice(0, budget)
 }
 
-function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
+function buildProjectPrompt(root, analysis, keyFiles, focus, limits, seen) {
   const { hint, areas } = focusParts(focus)
   const scope = areas.length ? areas.map((area) => `${area.label} (area "${area.key}")`).join(", ") : ""
   const size = limits ?? PROJECT_LIMITS
@@ -1450,6 +1592,8 @@ function buildProjectPrompt(root, analysis, keyFiles, focus, limits) {
     'Ein "Erweitern"-Vorschlag ist ein vollständiges Feature, kein Detail: eine neue Funktion, eine neue Ansicht, ein neuer Modus, ein neuer Befehl, eine neue Auswertung, eine neue Automatik oder ein neuer Anwendungsfall — und er verbessert die Nutzung.',
     "Wenn das Projekt zu wenig hergibt, liefere weniger Vorschläge statt geratener.",
     scope ? `${hint ? `Zusätzlich im Blick: ${hint}` : ""}` : hint ? `Besonderes Augenmerk: ${hint}` : "",
+    "",
+    askedBlock(seen),
     "",
     `PROJEKTVERZEICHNIS: ${root}`,
     analysis.text,
@@ -1716,39 +1860,65 @@ export default {
         // Rueckmeldung wirkt das wie ein Haenger.
         toast("Frage das Modell nach Vorschlägen …", "info")
 
+        // Was diese Sitzung schon gesehen hat, wird nicht noch einmal gezeigt.
+        const keys = [`session:${sessionID}`]
+        const seen = askedFor(keys)
+
         // In langen Sessions scheitert die Anfrage mitunter (etwa ein 502 des
         // Anbieters). Dann darf der Befehl nicht ins Leere laufen: es gibt
         // Vorschlaege aus den Belegen.
-        let generated
-        try {
-          generated = await client.session.generate({ sessionID, prompt: buildPrompt(evidence, focus) })
-        } catch (cause) {
-          toast(`Modell nicht erreichbar (${cause?.message ?? cause}) — Vorschläge aus den Belegen`, "warning")
+        const askModel = async (strict) => {
+          try {
+            return await client.session.generate({
+              sessionID,
+              prompt: buildPrompt(evidence, focus, seen) + (strict ? strictReminder() : ""),
+            })
+          } catch (cause) {
+            toast(`Modell nicht erreichbar (${cause?.message ?? cause}) — Vorschläge aus den Belegen`, "warning")
+            return undefined
+          }
         }
 
-        // Zweite, belegbasierte Bremse: das Modell darf sich an der Obergrenze
-        // nicht vorbeireden. Bei mehr Vorschlägen als die Session trägt, fliegt
-        // der Rest hier raus. Mit Filter zaehlt zusaetzlich nur der gefragte
-        // Bereich — und wenn dazu nichts kam, greift der Bereich selbst.
         const budget = scope.areas.length
           ? Math.min(suggestionBudget(evidence), FILTER_SUGGESTIONS)
           : suggestionBudget(evidence)
-        const listed = generated
-          ? parseSuggestions(generated?.text ?? generated).slice(0, budget)
-          : fallbackSuggestions(evidence)
-        const filtered = filterByAreas(listed, scope.areas)
-        const chosen = filtered.length || !scope.areas.length ? filtered : scope.areas.map(areaFallback)
+        const parseListed = (response) =>
+          (response ? parseSuggestions(response?.text ?? response) : []).slice(0, budget)
+
+        let generated = await askModel(false)
+        let fresh = freshSuggestions(parseListed(generated), seen)
+        if (generated && seen.length && !fresh.length) {
+          toast("Nur schon Vorgeschlagenes — noch einmal mit Nachdruck", "info")
+          generated = await askModel(true)
+          fresh = freshSuggestions(parseListed(generated), seen)
+        }
+        // Bringt das Modell nichts Neues — sei es, weil es nicht geantwortet hat,
+        // sei es, weil es sich wiederholt hat —, gilt der Rest aus den Belegen.
+        // Auch der muss neu sein.
+        if (!fresh.length) fresh = freshSuggestions(fallbackSuggestions(evidence), seen)
+
+        // Zweite, belegbasierte Bremse: das Modell darf sich an der Obergrenze
+        // nicht vorbeireden. Mit Filter zaehlt zusaetzlich nur der gefragte
+        // Bereich — und wenn dazu nichts kam, greift der Bereich selbst.
+        const filtered = filterByAreas(fresh, scope.areas)
+        const chosen =
+          filtered.length || !scope.areas.length ? filtered : freshSuggestions(scope.areas.map(areaFallback), seen)
         const suggestions = technicalOnly(chosen, evidence)
 
         if (scope.areas.length) {
           toast(
-            `${scope.areas.map((area) => area.label).join(", ")}: ${suggestions.length} von ${listed.length} Vorschlägen`,
+            `${scope.areas.map((area) => area.label).join(", ")}: ${suggestions.length} von ${parseListed(generated).length} Vorschlägen`,
             "info",
           )
         }
 
         if (!suggestions.length) {
-          toast("Die Belege geben keinen nächsten Schritt her", "info")
+          toast(
+            seen.length
+              ? "Nichts Neues: diese Sitzung hat schon alles dazu gesehen"
+              : "Die Belege geben keinen nächsten Schritt her",
+            "info",
+          )
           return true
         }
 
@@ -1777,6 +1947,8 @@ export default {
         const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true, removed: 0 }
         if (sole.removed) note({ action: "sole", sessionID, form: sole.id, owned: sole.owned, removed: sole.removed })
         if (!sole.owned) return true
+        // Gezeigt heisst gemerkt: beim naechsten Mal kommt nichts davon wieder.
+        rememberAsked(keys, suggestions)
         await submitSelection(sessionID, sole, suggestions, evidence)
         return true
       } catch (cause) {
@@ -1822,28 +1994,61 @@ export default {
     }
 
     /**
+     * Ein Versuch beim Modell fuer den Projektbericht.
+     *
+     * Scheitert er am Umfang (der Anbieter antwortet etwa mit 502), wird einmal
+     * kleiner nachgefasst: ein groeberer Ueberblick ist besser als keiner.
+     * `strict` haengt den Nachdruck an, wenn die erste Antwort nur Bekanntes
+     * enthielt.
+     */
+    const projectReport = async (client, sessionID, root, analysis, keyFiles, focus, seen, strict) => {
+      const reminder = strict ? strictReminder() : ""
+      try {
+        return await client.session.generate({
+          sessionID,
+          prompt: buildProjectPrompt(root, analysis, keyFiles, focus, undefined, seen) + reminder,
+        })
+      } catch (cause) {
+        toast(`Erster Versuch zu groß (${cause?.message ?? cause}) — noch einmal kompakt`, "warning")
+        try {
+          return await client.session.generate({
+            sessionID,
+            prompt: buildProjectPrompt(root, analysis, keyFiles, focus, PROJECT_COMPACT, seen) + reminder,
+          })
+        } catch (again) {
+          toast(`Modell nicht erreichbar (${again?.message ?? again}) — Vorschläge aus dem Projekt`, "warning")
+          return undefined
+        }
+      }
+    }
+
+    /**
      * Formular und Auftraege aus einem fertigen Projektbericht.
      *
      * Gilt fuer den frisch gelesenen und den zwischengespeicherten Bericht —
      * nur die Vorschlaege und der Vermerk ueber den Stand unterscheiden sich.
      * Der Filter wird nachgehalten, nicht erhofft: was nicht zum gefragten
-     * Bereich gehoert, faellt heraus. Liefert der Bericht dazu nichts, bleibt
-     * ein Vorschlag aus dem Bereich selbst — ein fremder waere die falsche
-     * Antwort auf die Frage.
+     * Bereich gehoert, faellt heraus. Dazu die harte Regel: nichts, was in
+     * dieser Sitzung oder fuer dieses Projekt schon einmal angeboten wurde,
+     * kommt ein zweites Mal. Gibt es nichts Neues, gibt es kein Formular.
      */
     async function offerProject(sessionID, input) {
-      const { root, analysis, listed, summary, evidence, scope, status } = input
+      const { root, analysis, listed, summary, evidence, scope, status, seen, keys } = input
       const scopeKeys = scope.areas.map((area) => area.key)
       const areas = selectAreas(analysis?.areas ?? [], analysis?.files ?? [], scopeKeys)
       const budget = scopeKeys.length
         ? Math.min(suggestionBudget(evidence), FILTER_SUGGESTIONS)
         : suggestionBudget(evidence)
-      const filtered = filterByAreas(listed, scope.areas)
-      const fallback = scopeKeys
-        .map((key) => areas.find((area) => area.key === key) ?? scope.areas.find((area) => area.key === key))
-        .filter(Boolean)
-        .map(areaFallback)
-      const suggestions = ensureAreaSuggestions(filtered.length ? filtered : fallback, areas, budget).slice(
+      const fresh = freshSuggestions(listed, seen)
+      const filtered = filterByAreas(fresh, scope.areas)
+      const fallback = freshSuggestions(
+        scopeKeys
+          .map((key) => areas.find((area) => area.key === key) ?? scope.areas.find((area) => area.key === key))
+          .filter(Boolean)
+          .map(areaFallback),
+        seen,
+      )
+      const suggestions = ensureAreaSuggestions(filtered.length ? filtered : fallback, areas, budget, seen).slice(
         0,
         MAX_SUGGESTIONS,
       )
@@ -1855,8 +2060,11 @@ export default {
         )
       }
       if (!suggestions.length) {
-        toast("Das Projekt gibt keinen nächsten Schritt her", "info")
+        toast("Nichts Neues: alles dazu wurde in dieser Sitzung schon vorgeschlagen", "info")
         return true
+      }
+      if (seen?.length && !fresh.length) {
+        toast(`Nur schon Vorgeschlagenes im Bericht — ${suggestions.length} neue daraus abgeleitet`, "info")
       }
 
       const count = analysis?.count ?? 0
@@ -1883,6 +2091,9 @@ export default {
 
       const sole = (await keepSoleForm(client, sessionID, INSTANCE_ID)) ?? { id: formID, owned: true, removed: 0 }
       if (!sole.owned) return true
+      // Gezeigt heisst gemerkt: erst wenn dieses Formular stehen bleibt, gilt die
+      // Liste als angeboten. So kann sie kein zweites Mal auftauchen.
+      rememberAsked(keys ?? [], suggestions)
       await submitSelection(sessionID, sole, suggestions, evidence, extra)
       return true
     }
@@ -1911,26 +2122,42 @@ export default {
       // ausschliesslich Vorschlaege dieses Bereichs. Alles andere bleibt Hinweis.
       const scope = focusParts(focus)
       const scopeKeys = scope.areas.map((area) => area.key)
+      // Gemerkt wird je Sitzung und je Projektverzeichnis: ein Vorschlag, den
+      // diese Sitzung schon gesehen hat, kommt nicht wieder — und einer, den es
+      // fuer dieses Projekt schon gab, ebenso wenig.
+      const keys = [`session:${sessionID}`, `project:${root}`]
+      const seen = askedFor(keys)
       pending = true
       try {
         // Wiederverwenden, wenn der Bericht jung genug ist, den gefragten
         // Bereich abdeckt und der Baum unveraendert steht. Geprueft wird nur die
-        // Wurzel: ein Aufruf statt des ganzen Spaziergangs.
+        // Wurzel: ein Aufruf statt des ganzen Spaziergangs. Aus dem Bericht kommt
+        // aber nur, was noch nicht dran war — ist er abgegrast, wird gelesen und
+        // neu gefragt.
         const cached = readProjectReport?.(root)
         if (cached && Date.now() - cached.at <= PROJECT_REPORT_TTL_MS && reportCovers(cached, scopeKeys)) {
           const signature = await projectSignature(client, root)
           if (signature !== undefined && signature === cached.signature) {
-            toast(`Projektbericht wiederverwendet (${reportAge(cached.at)}) — ${root}`, "info")
-            note({ action: "report", sessionID, root, reused: true, at: cached.at })
-            return await offerProject(sessionID, {
-              root,
-              analysis: cached.analysis,
-              listed: technicalOnly(cached.suggestions ?? [], evidence),
-              summary: cached.summary,
-              evidence,
-              scope,
-              status: reportStatus(cached, true),
-            })
+            const listed = technicalOnly(cached.suggestions ?? [], evidence)
+            // Wiederverwenden nur, wenn der Bericht fuer den gefragten Bereich
+            // noch etwas hergibt, das nicht schon gezeigt wurde. Sonst wird
+            // gelesen und neu gefragt — ein zweites Mal dasselbe gibt es nicht.
+            if (freshSuggestions(filterByAreas(listed, scope.areas), seen).length) {
+              toast(`Projektbericht wiederverwendet (${reportAge(cached.at)}) — ${root}`, "info")
+              note({ action: "report", sessionID, root, reused: true, at: cached.at })
+              return await offerProject(sessionID, {
+                root,
+                analysis: cached.analysis,
+                listed,
+                summary: cached.summary,
+                evidence,
+                scope,
+                status: reportStatus(cached, true),
+                seen,
+                keys,
+              })
+            }
+            toast("Der Bericht ist abgegrast — frage nach neuen Vorschlägen", "info")
           }
         }
 
@@ -1955,35 +2182,34 @@ export default {
         })
         const analysis = analyzeProject(files, keyFiles, signals)
         toast("Wertee das Projekt technisch aus und baue Vorschläge …", "info")
-        let generated
-        try {
-          generated = await client.session.generate({
-            sessionID,
-            prompt: buildProjectPrompt(root, analysis, keyFiles, focus),
-          })
-        } catch (cause) {
-          // Scheitert der erste Versuch am Umfang (der Anbieter antwortet etwa
-          // mit 502), wird kleiner nachgefasst.
-          toast(`Erster Versuch zu groß (${cause?.message ?? cause}) — noch einmal kompakt`, "warning")
-          try {
-            generated = await client.session.generate({
-              sessionID,
-              prompt: buildProjectPrompt(root, analysis, keyFiles, focus, PROJECT_COMPACT),
-            })
-          } catch (again) {
-            toast(`Modell nicht erreichbar (${again?.message ?? again}) — Vorschläge aus dem Projekt`, "warning")
-          }
+
+        // Erster Versuch mit der Liste des Schon-gefragt. Kommt nur Bekanntes
+        // zurueck, wird einmal mit Nachdruck nachgefragt — danach ist Schluss.
+        let generated = await projectReport(client, sessionID, root, analysis, keyFiles, focus, seen)
+        let report = generated ? parseProjectReport(generated?.text ?? generated) : { summary: "", suggestions: [] }
+        if (generated && seen.length && !freshSuggestions(report.suggestions, seen).length) {
+          toast("Nur schon Vorgeschlagenes — noch einmal mit Nachdruck", "info")
+          generated = await projectReport(client, sessionID, root, analysis, keyFiles, focus, seen, true)
+          if (generated) report = parseProjectReport(generated?.text ?? generated)
         }
 
-        const report = generated ? parseProjectReport(generated?.text ?? generated) : { summary: "", suggestions: [] }
         const listed = technicalOnly(
           report.suggestions.length ? report.suggestions : projectFallback(files, evidence),
           evidence,
         )
+        // Hat das Modell nur Bekanntes geliefert, kommt dazu, was die Ablage
+        // selbst hergibt — sonst bliebe der Lauf leer, obwohl es belegte
+        // Schritte gibt, die noch nicht dran waren.
+        const topped =
+          freshSuggestions(listed, seen).length || !seen.length
+            ? listed
+            : technicalOnly([...listed, ...projectFallback(files, evidence)], evidence)
 
         // Bericht ablegen, damit der naechste Lauf nicht wieder liest. Nur mit
         // gueltigem Kennzeichen: ohne Kennzeichen waere er nicht pruefbar und
-        // damit wertlos.
+        // damit wertlos. Abgelegt wird die volle Liste; das Aussortieren des
+        // Schon-gefragt passiert erst beim Zeigen, sonst waere der Bericht nach
+        // einem einzigen Lauf verbraucht.
         const signature = await projectSignature(client, root)
         if (signature !== undefined) {
           await writeProjectReport?.({
@@ -1992,7 +2218,7 @@ export default {
             signature,
             scope: scopeKeys,
             summary: report.summary,
-            suggestions: listed,
+            suggestions: topped,
             analysis,
           })
           note({ action: "report", sessionID, root, reused: false, files: files.length })
@@ -2001,11 +2227,13 @@ export default {
         return await offerProject(sessionID, {
           root,
           analysis,
-          listed,
+          listed: topped,
           summary: report.summary,
           evidence,
           scope,
           status: reportStatus({ at: Date.now() }, false),
+          seen,
+          keys,
         })
       } catch (cause) {
         toast(String(cause?.message ?? cause), "error")
@@ -2071,6 +2299,44 @@ export default {
         })
     } catch {
       /* ohne Ablage kein Zwischenspeicher: dann wird eben jedes Mal gelesen */
+    }
+
+    // Was schon vorgeschlagen wurde. Je Sitzung und je Projektverzeichnis eine
+    // Liste der gezeigten Titel: derselbe Vorschlag kommt kein zweites Mal.
+    let readAsked
+    let writeAsked
+    try {
+      const [asked, updateAsked] = storage.store("asked", { initial: { entries: [] } })
+      readAsked = (key) => (asked.entries ?? []).find((entry) => entry?.key === key)?.titles ?? []
+      writeAsked = (key, titles) =>
+        updateAsked((draft) => {
+          const others = (draft.entries ?? []).filter((entry) => entry?.key !== key)
+          draft.entries = [{ key, titles: [...titles].slice(-ASKED_MAX), at: Date.now() }, ...others]
+            .sort((left, right) => (right?.at ?? 0) - (left?.at ?? 0))
+            .slice(0, ASKED_KEYS)
+        })
+    } catch {
+      /* ohne Ablage wird eben nichts gemerkt: dann kann es Wiederholungen geben */
+    }
+
+    /** Alle Titel, die in diesen Schluesseln schon gezeigt wurden. */
+    const askedFor = (keys) => {
+      const titles = []
+      for (const key of keys) {
+        for (const title of readAsked?.(key) ?? []) if (!titles.includes(title)) titles.push(title)
+      }
+      return titles
+    }
+
+    /** Die gezeigten Titel merken — je Sitzung und je Projektverzeichnis. */
+    const rememberAsked = (keys, suggestions) => {
+      const titles = (suggestions ?? []).map((suggestion) => String(suggestion?.title ?? "").trim()).filter(Boolean)
+      if (!writeAsked || !titles.length) return
+      for (const key of keys) {
+        const merged = [...askedFor([key])]
+        for (const title of titles) if (!merged.includes(title)) merged.push(title)
+        void Promise.resolve(writeAsked(key, merged)).catch(() => undefined)
+      }
     }
 
     // Spurensicherung: was das Plugin bei welcher Runde entschieden hat

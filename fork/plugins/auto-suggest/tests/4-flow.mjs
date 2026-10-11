@@ -72,12 +72,13 @@ function makeStorage() {
   return {
     store(key, { initial }) {
       if (!files.has(key)) files.set(key, JSON.parse(JSON.stringify(initial)))
+      // Wie der echte Store: dasselbe Objekt bleibt bestehen und wird an Ort
+      // und Stelle geändert. Eine Kopie würde die Referenz des Plugins veralten
+      // lassen — dann fände es seine eigene Ablage nie wieder.
       return [
         files.get(key),
         async (mutation) => {
-          const draft = JSON.parse(JSON.stringify(files.get(key)))
-          mutation(draft)
-          files.set(key, draft)
+          mutation(files.get(key))
         },
       ]
     },
@@ -654,6 +655,34 @@ check(
 check(
   "sie sind begruendet",
   typeof robustOptions[0]?.description === "string" && robustOptions[0].description.length > 0,
+)
+
+// 12. Zweimal /next hintereinander: nichts wiederholt sich.
+const serverR = makeServer()
+const storageR = makeStorage()
+const r = await instance(serverR, storageR)
+r.ask()
+await sleep(1600)
+const repeatFirst = (serverR.forms[0]?.fields?.[0]?.options ?? []).map((option) => option.value)
+check("der erste Lauf zeigt Vorschläge", repeatFirst.length === 2, JSON.stringify(repeatFirst))
+const askedAfterFirst = (storageR.store("asked", { initial: { entries: [] } })[0].entries ?? [])[0]
+check("das Gezeigte wird gemerkt", (askedAfterFirst?.titles ?? []).length === 2, JSON.stringify(askedAfterFirst))
+const generationsBeforeRepeat = serverR.generations()
+serverR.cancel(serverR.pending()[0].id)
+await sleep(1800)
+r.ask()
+await sleep(1800)
+const repeatSecond = (serverR.pending()[0]?.fields?.[0]?.options ?? []).map((option) => option.value)
+check("der zweite Lauf zeigt überhaupt etwas", repeatSecond.length > 0, JSON.stringify(repeatSecond))
+check(
+  "und nichts davon war schon da",
+  repeatSecond.every((title) => !repeatFirst.includes(title)),
+  JSON.stringify({ repeatFirst, repeatSecond }),
+)
+check(
+  "das Modell wurde auf die Wiederholung hingewiesen",
+  serverR.generations() - generationsBeforeRepeat >= 2,
+  `generierungen: ${serverR.generations() - generationsBeforeRepeat}`,
 )
 
 console.log("")
